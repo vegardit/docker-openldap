@@ -1,0 +1,12 @@
+version: 1
+
+# Global Database Options @ https://linux.die.net/man/5/slapd-config
+
+dn: olcDatabase={-1}frontend,cn=config
+changetype: modify
+replace: olcPasswordHash
+olcPasswordHash: {SSHA}
+-
+# maximum number of seconds (in real time) slapd will spend answering a search request
+replace: olcTimeLimit
+olcTimeLimit: 60

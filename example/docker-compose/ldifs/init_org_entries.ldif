@@ -1,0 +1,68 @@
+version: 1
+
+##############################
+# Employees
+# slappasswd -h {SHA} -s changeit
+##############################
+dn: uid=alice,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
+ou: Employees
+ou: Users
+description: Alice Young
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+objectClass: ldapPublicKey
+uid: alice
+cn: Alice Young
+sn: Young
+givenName: Alice
+mail: alice@example.com
+userPassword: CHANGE@it
+sshPublicKey:
+
+dn: uid=bob,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
+ou: Employees
+ou: Users
+description: Bob Old
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+objectClass: ldapPublicKey
+uid: bob
+cn: Bob Old
+sn: Old
+givenName: Bob
+mail: bob@example.com
+userPassword: CHANGE@it
+sshPublicKey:
+
+
+##############################
+# Technical Accounts
+##############################
+dn: uid=ldapbind,ou=TechnicalAccounts,ou=Users,${LDAP_INIT_ORG_DN}
+ou: TechnicalAccounts
+ou: Users
+description: ldapbind user
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: ldapbind
+cn: ldapbind
+sn: ldapbind
+userPassword: CHANGE@it
+
+##############################
+# Groups
+##############################
+dn: cn=ldapadmins,ou=Groups,${LDAP_INIT_ORG_DN}
+ou: Groups
+description: LDAP Administrators Group
+objectClass: top
+objectClass: groupOfUniqueNames
+cn: ldapadmins
+uniqueMember: uid=alice,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
+uniqueMember: uid=bob,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}

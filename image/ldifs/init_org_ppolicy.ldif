@@ -1,0 +1,40 @@
+version: 1
+
+##############################
+# Password Policy
+##############################
+dn: ou=Policies,${LDAP_INIT_ORG_DN}
+ou: Policies
+objectClass: top
+objectClass: organizationalUnit
+
+dn: cn=DefaultPasswordPolicy,ou=Policies,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: device
+objectClass: pwdPolicy
+objectClass: pwdPolicyChecker
+cn: DefaultPasswordPolicy
+pwdAttribute: userPassword
+# 0=reset count of consecutive password failures only on successful authentication
+pwdFailureCountInterval: 0
+# maximum number of consecutive password failures locking the account
+pwdMaxFailure: ${LDAP_INIT_PPOLICY_MAX_FAILURES:-3}
+pwdMinAge: 0
+pwdMustChange: TRUE
+# if TRUE user must send current password during password modification operation
+pwdSafeModify: FALSE
+# number of passwords maintained in a list of previously used passwords
+pwdInHistory: 0
+# number of further bind operations after a password has expired
+pwdGraceAuthNLimit: 0
+# account lock duration in seconds (300=5min)
+pwdLockoutDuration: ${LDAP_INIT_PPOLICY_LOCKOUT_DURATION:-300}
+pwdAllowUserChange: TRUE
+#0=do not show expiration warning on bind
+pwdExpireWarning: 0
+pwdLockout: TRUE
+pwdMaxAge: 0
+# Password Quality
+pwdMinLength: ${LDAP_INIT_PPOLICY_PW_MIN_LENGTH:-8}
+pwdCheckQuality: 2
+pwdCheckModule: /usr/lib/ldap/pqchecker.so

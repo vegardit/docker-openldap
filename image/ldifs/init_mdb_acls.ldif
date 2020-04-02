@@ -1,0 +1,37 @@
+version: 1
+
+# General Database Options @ https://linux.die.net/man/5/slapd-config
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+########################
+# configure ACLs
+########################
+replace: olcAccess
+olcAccess: {0}to attrs=userPassword
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
+  by self write
+  by anonymous auth
+  by * none
+olcAccess: {1}to attrs=shadowLastChange
+  by self write
+  by users read
+  by * none
+olcAccess: {2}to attrs=sshPublicKey
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
+  by self write
+  by users read
+  by * none
+# This ACL gives incoming connections the ability to read the rootDSE.
+# It is important to allow this, as clients may need to obtain information from the base level (such as your supported SASL Mechanisms).
+# The ".base" portion of the ACL restricts clients to querying only the top level
+olcAccess: {3}to dn.base=""
+  by * read
+olcAccess: {4}to *
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
+  by users read
+  by anonymous auth
+  by * none

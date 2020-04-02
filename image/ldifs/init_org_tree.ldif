@@ -1,0 +1,43 @@
+version: 1
+
+##############################
+# LDAP tree definition
+##############################
+dn: ${LDAP_INIT_ORG_DN}
+description: ${LDAP_INIT_ORG_NAME}
+objectClass: top
+objectClass: organization
+${LDAP_INIT_ORG_DN_ATTR}
+
+dn: ou=Groups,${LDAP_INIT_ORG_DN}
+ou: Groups
+description: Groups
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=Users,${LDAP_INIT_ORG_DN}
+ou: Users
+description: Users Accounts
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=Internal,ou=Users,${LDAP_INIT_ORG_DN}
+ou: Internal
+ou: Users
+description: Internal Users (Employees)
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=External,ou=Users,${LDAP_INIT_ORG_DN}
+ou: External
+ou: Users
+description: External Users (Contractors, Customers)
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=TechnicalAccounts,ou=Users,${LDAP_INIT_ORG_DN}
+ou: TechnicalAccounts
+ou: Users
+description: Technical Accounts
+objectClass: top
+objectClass: organizationalUnit

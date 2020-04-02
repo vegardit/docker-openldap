@@ -1,0 +1,18 @@
+version: 1
+
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: unique
+
+dn: olcOverlay=unique,olcDatabase={1}mdb,cn=config
+objectClass: top
+objectClass: olcConfig
+objectClass: olcOverlayConfig
+objectClass: olcUniqueConfig
+olcOverlay: unique
+olcUniqueURI: ldap:///${LDAP_INIT_ORG_DN}?cn?sub
+olcUniqueURI: ldap:///${LDAP_INIT_ORG_DN}?uid?sub
+olcUniqueURI: ldap:///ou=Users,${LDAP_INIT_ORG_DN}?mail?sub
+olcUniqueURI: ldap:///ou=Users,${LDAP_INIT_ORG_DN}?gidNumber?sub
+olcUniqueURI: ldap:///ou=Users,${LDAP_INIT_ORG_DN}?uidNumber?sub

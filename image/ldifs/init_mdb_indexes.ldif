@@ -1,0 +1,15 @@
+version: 1
+
+# General Database Options @ https://linux.die.net/man/5/slapd-config
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+########################
+# configure DB indexes
+########################
+replace: olcDbIndex
+olcDbIndex: objectClass pres,eq
+olcDbIndex: uid,mail pres,eq
+olcDbIndex: uidNumber,gidNumber eq
+olcDbIndex: cn,givenName,sn,ou pres,eq,approx,sub
+olcDbIndex: member,memberUid,memberOf,uniqueMember pres,eq

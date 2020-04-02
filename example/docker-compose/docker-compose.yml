@@ -1,0 +1,66 @@
+#############################
+# @author Sebastian Thomschke, Vegard IT GmbH
+#############################
+
+version: '3.7'
+
+# https://docs.docker.com/compose/compose-file/
+
+services:
+
+  ldap_service:
+    # https://github.com/vegardit/docker-openldap
+    image: vegardit/openldap:latest # https://hub.docker.com/r/vegardit/openldap
+    environment:
+      #DEBUG_RUN_SH: 1
+      LDAP_INIT_ORG_DN: o=example.com
+      LDAP_INIT_ORG_NAME: Example Inc.
+      LDAP_INIT_ROOT_USER_DN: uid=admin,o=example.com
+      LDAP_INIT_ROOT_USER_PW: CHANGE@it
+      LDAP_BACKUP_TIME: # disable backup by setting to empty string
+    ports:
+      - 389:389
+    volumes:
+      - ./ldifs/init_org_entries.ldif:/opt/ldifs/init_org_entries.ldif:ro
+      - ./ldifs/init_org_tree.ldif:/opt/ldifs/init_org_tree.ldif:ro
+
+  ldap_ui:
+    # https://github.com/alekseydemidov/pla-ssp
+    image: netflyer/openldap-ui:latest # https://hub.docker.com/r/netflyer/openldap-ui
+    ports:
+      - 8080:8080
+      - 8081:8081
+    environment:
+      ###############################
+      # PHP LDAP Admin (Port 8080)
+      ###############################
+      PHPLDAPADMIN_LDAP_BASE: o=example.com
+      PHPLDAPADMIN_LDAP_CLIENT_TLS: 'false'
+      PHPLDAPADMIN_LDAP_HOSTS: ldap_service
+      ###############################
+      # SelfService Password (Port 8081) https://github.com/ltb-project/self-service-password
+      ###############################
+      DEBUG_MODE: 'false'
+      #LDAP connection https://ltb-project.org/documentation/self-service-password/1.3/config_ldap
+      LDAP_URL: ldap://ldap_service
+      LDAP_BASE_DN: ou=Users,o=example.com
+      LDAP_USER_DN: uid=ldapbind,ou=TechnicalAccounts,ou=Users,o=example.com
+      LDAP_USER_PASSWORD: CHANGE@it
+      LDAP_FILTER: '(\&(objectClass=inetOrgPerson)(uid={login}))' # backslash is mandatory!
+      LDAP_LOGIN_ATTRIBUTE: 'uid'
+      LDAP_FULLNAME_ATTRIBUTE: 'cn'
+      CHANGE_SSHKEY: 'true'
+      MAIL_ADDRESS_USE_LDAP: 'true'
+      USE_TOKENS: 'false' # don't use "forgot my password" links
+      USE_QUESTIONS: 'false' # https://ltb-project.org/documentation/self-service-password/latest/config_questions
+      # Password policy https://ltb-project.org/documentation/self-service-password/1.3/config_ppolicy
+      PWD_MIN_LENGTH: 8
+      PWD_MAX_LENGTH: 32
+      PWD_MIN_LOWER: 1
+      PWD_MIN_UPPER: 1
+      PWD_MIN_DIGIT: 1
+      PWD_MIN_SPECIAL: 1
+      PWD_NO_REUSE: 'false'
+      PWD_SHOW_POLICY: 'always'
+      PWD_SHOW_POLICY_POS: 'below'
+      USE_PWNEDPASSWORD: 'false'

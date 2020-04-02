@@ -1,0 +1,39 @@
+# https://github.com/travis-ci/travis-yml/blob/master/schema.json
+language: bash # using 'bash' instead of 'minimal' to prevent https://travis-ci.community/t/job-stuck-booting/4976
+
+sudo: true
+
+services:
+  - docker
+
+cache:
+  directories:
+    - $HOME/.trivy/cache
+
+env:
+  global:
+    DOCKER_REGISTRY=docker.io
+    DOCKER_REPO=vegardit/openldap
+    TRIVY_CACHE_DIR=$HOME/.trivy/cache
+
+
+before_script:
+ # workaround for
+ # - https://stackoverflow.com/questions/34130613/how-to-make-travis-ci-work-with-a-local-git-branch-instead-of-a-specific-commit
+ # - https://unhashable.com/getting-the-current-branch-name-during-a-pull-request-in-travis-ci/
+ - if [ "$TRAVIS_PULL_REQUEST" == "false" ]; then
+     export GIT_BRANCH="$TRAVIS_BRANCH";
+   else
+     export GIT_BRANCH="$TRAVIS_PULL_REQUEST_BRANCH";
+   fi
+ #- printenv | sort
+ - mkdir -p "$TRIVY_CACHE_DIR"
+
+script:
+ - echo "$DOCKER_PASSWORD" | docker login -u="$DOCKER_USERNAME" "$DOCKER_REGISTRY" --password-stdin &&
+   if [[ "$TRAVIS_BRANCH" == "master" ]]; then
+     DOCKER_PUSH=1 bash ./build-image.sh;
+   else 
+     bash ./build-image.sh;
+   fi
+ - ls -l $TRIVY_CACHE_DIR/trivy

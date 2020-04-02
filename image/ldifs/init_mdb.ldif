@@ -1,0 +1,20 @@
+version: 1
+
+# General Database Options @ https://linux.die.net/man/5/slapd-config
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+########################
+# configure Base DN
+########################
+replace: olcSuffix
+olcSuffix: ${LDAP_INIT_ORG_DN}
+-
+########################
+# configure root user
+########################
+replace: olcRootDN
+olcRootDN: ${LDAP_INIT_ROOT_USER_DN}
+-
+replace: olcRootPW
+olcRootPW: ${LDAP_INIT_ROOT_USER_PW_HASHED}
