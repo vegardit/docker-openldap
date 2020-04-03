@@ -63,15 +63,15 @@ docker run -itd --env-file environment vegardit/openldap
 
 In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env].
 
-The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](ldifs/init_org_tree.ldif).
+The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
 You can mount a custom file at `/opt/ldifs/init_org_tree.ldif` if you require changes.
 
-LDAP entries (users, groups) are imported from [/opt/ldifs/init_org_entries.ldif](ldifs/init_org_entries.ldif).
+LDAP entries (users, groups) are imported from [/opt/ldifs/init_org_entries.ldif](image/ldifs/init_org_entries.ldif).
 You can mount a custom file at `/opt/ldifs/init_org_entries.ldif` if you require changes.
 
 ### <a name="ppolicy"></a>Customizing the Password Policy
 
-On **initial** container launch, the [password policy](https://www.openldap.org/doc/admin24/overlays.html#Password%20Policies) is imported from [/opt/ldifs/init_org_ppolicy.ldif](ldifs/init_org_ppolicy.ldif)
+On **initial** container launch, the [password policy](https://www.openldap.org/doc/admin24/overlays.html#Password%20Policies) is imported from [/opt/ldifs/init_org_ppolicy.ldif](image/ldifs/init_org_ppolicy.ldif)
 
 The following parameters can be modified via environment variables **before** initial container launch:
 
@@ -145,7 +145,7 @@ services:
 
 #### DB Indexes
 
-The database indexes that are configured during initial container launch are imported from [/opt/ldifs/init_backend_indexes.ldif](ldifs/init_mdb_indexes.ldif)
+The database indexes that are configured during initial container launch are imported from [/opt/ldifs/init_backend_indexes.ldif](image/ldifs/init_mdb_indexes.ldif)
 
 To use other indexes, simply mount a custom file at `/opt/ldifs/init_backend_indexes.ldif` **before** initial container launch.
 
