@@ -62,7 +62,7 @@ Alternatively you can use an [env-file](https://docs.docker.com/compose/env-file
 docker run -itd --env-file environment vegardit/openldap
 ```
 
-In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env].
+In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
 
 The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
 You can mount a custom file at `/opt/ldifs/init_org_tree.ldif` if you require changes.
@@ -198,3 +198,10 @@ None    (32768)  only messages that get logged whatever log level is set
 ## <a name="license"></a>License
 
 All files in this repository are released under the [Apache License 2.0](LICENSE.txt).
+
+Individual files contain the following tag instead of the full license text:
+```
+SPDX-License-Identifier: Apache-2.0
+```
+
+This enables machine processing of license information based on the SPDX License Identifiers that are available here: https://spdx.org/licenses/.
