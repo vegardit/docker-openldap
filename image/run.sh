@@ -174,18 +174,26 @@ echo "$LDAP_PPOLICY_PQCHECKER_RULE" > /etc/ldap/pqchecker/pqparams.dat
 
 
 #################################################################
-# Configure LDAP backup task
+# Configure background task for LDAP backup
 #################################################################
 if [ -n "${LDAP_BACKUP_TIME:-}" ]; then
    log "--------------------------------------------"
    log "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
+   if [[ "$LDAP_BACKUP_TIME" != +([0-9][0-9]:[0-9][0-9]) ]]; then
+      log "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
+      exit 1
+   fi
+
+   # testing if LDAP_BACKUP_FILE is writeable
+   touch "$LDAP_BACKUP_FILE"
+
    function backup_ldap() {
       while true; do
          while [ "$(date +%H:%M)" != "${LDAP_BACKUP_TIME}" ]; do
             sleep 10s
          done
          log "Creating periodic LDAP backup at [$LDAP_BACKUP_FILE]..."
-         slapcat -n 1 -l $LDAP_BACKUP_FILE || true
+         slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
          sleep 23h
       done
    }

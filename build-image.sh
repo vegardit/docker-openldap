@@ -35,13 +35,13 @@ docker build $(dirname $0)/image \
 #
 mkdir -p ${TRIVY_CACHE_DIR:-$HOME/.trivy/cache}
 docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v ${TRIVY_CACHE_DIR:-$HOME/.trivy/cache}:/root/.cache/ \
-  aquasec/trivy --no-progress --exit-code 0 --severity HIGH,CRITICAL $DOCKER_REPO:${last_commit_date}
+   -v /var/run/docker.sock:/var/run/docker.sock \
+   -v ${TRIVY_CACHE_DIR:-$HOME/.trivy/cache}:/root/.cache/ \
+   aquasec/trivy --no-progress --exit-code 0 --severity HIGH,CRITICAL $DOCKER_REPO:${last_commit_date}
 docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v ${TRIVY_CACHE_DIR:-$HOME/.trivy/cache}:/root/.cache/ \
-  aquasec/trivy --no-progress --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $DOCKER_REPO:${last_commit_date}
+   -v /var/run/docker.sock:/var/run/docker.sock \
+   -v ${TRIVY_CACHE_DIR:-$HOME/.trivy/cache}:/root/.cache/ \
+   aquasec/trivy --no-progress --ignore-unfixed --exit-code 1 --severity HIGH,CRITICAL $DOCKER_REPO:${last_commit_date}
 sudo chown -R $USER:$(id -gn) $TRIVY_CACHE_DIR || true
 
 #
