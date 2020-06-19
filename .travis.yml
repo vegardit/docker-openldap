@@ -33,7 +33,7 @@ script:
  - echo "$DOCKER_PASSWORD" | docker login -u="$DOCKER_USERNAME" "$DOCKER_REGISTRY" --password-stdin &&
    if [[ "$TRAVIS_BRANCH" == "master" ]]; then
      DOCKER_PUSH=1 bash ./build-image.sh;
+     curl -X POST https://hooks.microbadger.com/images/vegardit/openldap/${MICROBADGER_TOKEN} || true;
    else 
      bash ./build-image.sh;
    fi
- - ls -l $TRIVY_CACHE_DIR/trivy
