@@ -18,6 +18,7 @@ last_commit_date=$(date -d @$(git log -1 --format="%at") --utc +"%Y%m%d_%H%M%S")
 
 docker build $(dirname $0)/image \
    --compress \
+   --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
    --build-arg GIT_BRANCH="${GIT_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" \
    --build-arg GIT_COMMIT_DATE="$(date -d @$(git log -1 --format='%at') --utc +'%Y-%m-%d %H:%M:%S UTC')" \
    --build-arg GIT_COMMIT_HASH="$(git rev-parse --short HEAD)" \

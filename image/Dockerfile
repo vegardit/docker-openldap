@@ -39,7 +39,7 @@ RUN \
      apt-get update -y && \
      apt-get install --no-install-recommends -y libcomerr2 mc && \
      apt-get install --no-install-recommends -y htop less procps vim && \
-     echo 'set ignorecase\n\
+     echo -e 'set ignorecase\n\
 set showmatch\n\
 set novisualbell\n\
 set noerrorbells\n\
@@ -82,14 +82,17 @@ set mouse-=a' > ~/.vimrc; \
 
 VOLUME ["/etc/ldap/slapd.d", "/var/lib/ldap"]
 
+ARG BUILD_DATE
 ARG GIT_REPO_URL
 ARG GIT_BRANCH
 ARG GIT_COMMIT_HASH
 ARG GIT_COMMIT_DATE
 
 LABEL \
+  org.label-schema.schema-version="1.0" \
+  org.label-schema.build-date=$BUILD_DATE \
   org.label-schema.vcs-ref=$GIT_COMMIT_HASH \
-  org.label-schema.vcs-url="https://github.com/vegardit/docker-openldap"
+  org.label-schema.vcs-url=$GIT_REPO_URL
 
 RUN \
   echo "GIT_REPO:   $GIT_REPO_URL" > /opt/build_info && \
