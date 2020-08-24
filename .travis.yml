@@ -1,14 +1,20 @@
 # https://github.com/travis-ci/travis-yml/blob/master/schema.json
 language: bash # using 'bash' instead of 'minimal' to prevent https://travis-ci.community/t/job-stuck-booting/4976
 
-sudo: true
+addons:
+  apt:
+    packages:
+    - dos2unix
+
 
 services:
   - docker
 
+
 cache:
   directories:
     - $HOME/.trivy/cache
+
 
 env:
   global:
@@ -29,11 +35,12 @@ before_script:
  #- printenv | sort
  - mkdir -p "$TRIVY_CACHE_DIR"
 
+
 script:
  - echo "$DOCKER_PASSWORD" | docker login -u="$DOCKER_USERNAME" "$DOCKER_REGISTRY" --password-stdin &&
    if [[ "$TRAVIS_BRANCH" == "master" ]]; then
      DOCKER_PUSH=1 bash ./build-image.sh;
-     curl -X POST https://hooks.microbadger.com/images/vegardit/openldap/${MICROBADGER_TOKEN} || true;
+     curl -X POST https://hooks.microbadger.com/images/$DOCKER_REPO/$MICROBADGER_TOKEN || true;
    else 
      bash ./build-image.sh;
    fi

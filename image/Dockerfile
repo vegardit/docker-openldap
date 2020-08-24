@@ -6,15 +6,16 @@
 # https://github.com/vegardit/docker-openldap
 #
 
-# built daily:
-# https://hub.docker.com/r/bitnami/minideb/tags?page=1&name=buster
-FROM bitnami/minideb:buster
+# https://hub.docker.com/_/debian?tab=tags&name=buster-slim
+ARG BASE_IMAGE=debian:buster-slim
 
-# built monthly:
-# https://hub.docker.com/_/debian?tab=tags&page=1&name=buster-slim
-# FROM debian:buster-slim
+FROM ${BASE_IMAGE}
 
 LABEL maintainer="Vegard IT GmbH (vegardit.com)"
+
+USER root
+
+SHELL ["/bin/bash", "-c"]
 
 # if set to 1 debug tools are added to the image (htop,less,mc,vim)
 ARG DEBUG_BUILD=0
@@ -27,16 +28,15 @@ ARG LC_ALL=C
 
 ARG BASE_LAYER_CACHE_KEY
 
-SHELL ["/bin/bash", "-c"]
-
 RUN \
-  apt-get update -y && \
-  # https://github.com/phusion/baseimage-docker/issues/319
-  apt-get install -y apt-utils 2> >( grep -v 'debconf: delaying package configuration, since apt-utils is not installed' >&2 ) && \
+  set -x && \
+  ############################################################
+  echo "Installing OS updates..." && \
+  apt-get -y update && \
+  apt-get -y upgrade && \
   ############################################################
   if [ "${DEBUG_BUILD}" = "1" ]; then \
      echo "Installing debugging tools..." && \
-     apt-get update -y && \
      apt-get install --no-install-recommends -y libcomerr2 mc && \
      apt-get install --no-install-recommends -y htop less procps vim && \
      echo -e 'set ignorecase\n\
@@ -80,28 +80,17 @@ set mouse-=a' > ~/.vimrc; \
      /var/log/{apt,alternatives.log,bootstrap.log,dpkg.log} \
      /tmp/* /var/tmp/*
 
-VOLUME ["/etc/ldap/slapd.d", "/var/lib/ldap"]
-
 ARG BUILD_DATE
-ARG GIT_REPO_URL
 ARG GIT_BRANCH
 ARG GIT_COMMIT_HASH
 ARG GIT_COMMIT_DATE
+ARG GIT_REPO_URL
 
 LABEL \
   org.label-schema.schema-version="1.0" \
   org.label-schema.build-date=$BUILD_DATE \
   org.label-schema.vcs-ref=$GIT_COMMIT_HASH \
   org.label-schema.vcs-url=$GIT_REPO_URL
-
-RUN \
-  echo "GIT_REPO:   $GIT_REPO_URL" > /opt/build_info && \
-  echo "GIT_BRANCH: $GIT_BRANCH" >> /opt/build_info && \
-  echo "GIT_COMMIT: $GIT_COMMIT_HASH @ $GIT_COMMIT_DATE" >> /opt/build_info  && \
-  cat /opt/build_info
-
-COPY ldifs /opt/ldifs
-COPY run.sh /opt/run.sh
 
 # Default configuration: can be overridden at the docker command line
 ENV \
@@ -125,6 +114,18 @@ ENV \
   LDAP_BACKUP_FILE='/var/lib/ldap/data.ldif' \
   LDAP_OPENLDAP_UID='' \
   LDAP_OPENLDAP_GID=''
+
+COPY ldifs /opt/ldifs
+COPY run.sh /opt/run.sh
+
+RUN \
+  echo "GIT_REPO:    $GIT_REPO_URL" > /opt/build_info && \
+  echo "GIT_BRANCH:  $GIT_BRANCH" >> /opt/build_info && \
+  echo "GIT_COMMIT:  $GIT_COMMIT_HASH @ $GIT_COMMIT_DATE" >> /opt/build_info  && \
+  echo "IMAGE_BUILD: $BUILD_DATE" >> /opt/build_info && \
+  cat /opt/build_info
+
+VOLUME ["/etc/ldap/slapd.d", "/var/lib/ldap"]
 
 EXPOSE 389
 

@@ -22,7 +22,9 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image based on [minideb](https://github.com/bitnami/minideb) (Debian 10 "buster") to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
+Opinionated docker image based on the [Debian](https://www.debian.org/) docker image [`debian:buster-slim`](https://hub.docker.com/_/debian?tab=tags&name=buster-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
+
+It is automatically built **daily** to include the latest OS security fixes.
 
 To keep the image light and simple, it does not configure TLS. Instead we recommend configuring a [Traefik 2.x](https://traefik.io) [TCP service](https://docs.traefik.io/routing/services/#configuring-tcp-services) with e.g. an auto-renewing [Let's Encrypt configuration](https://docs.traefik.io/https/acme/) in front of the OpenLDAP service.
 
