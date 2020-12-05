@@ -1,7 +1,7 @@
 # Copyright 2019-2020 by Vegard IT GmbH, Germany, https://vegardit.com
 # SPDX-License-Identifier: Apache-2.0
 #
-# @author Sebastian Thomschke, Vegard IT GmbH
+# Author: Sebastian Thomschke, Vegard IT GmbH
 #
 # https://github.com/vegardit/docker-openldap
 #
@@ -29,14 +29,19 @@ ARG LC_ALL=C
 ARG BASE_LAYER_CACHE_KEY
 
 RUN \
-  set -x && \
-  ############################################################
+  set -eu && \
+  echo "#################################################" && \
   echo "Installing OS updates..." && \
-  apt-get -y update && \
-  apt-get -y upgrade && \
-  ############################################################
+  echo "#################################################" && \
+  apt-get update -y && \
+  # https://github.com/phusion/baseimage-docker/issues/319
+  apt-get install --no-install-recommends -y apt-utils 2> >( grep -v 'debconf: delaying package configuration, since apt-utils is not installed' >&2 ) && \
+  apt-get upgrade -y && \
+  #
   if [ "${DEBUG_BUILD}" = "1" ]; then \
+     echo "#################################################" && \
      echo "Installing debugging tools..." && \
+     echo "#################################################" && \
      apt-get install --no-install-recommends -y libcomerr2 mc && \
      apt-get install --no-install-recommends -y htop less procps vim && \
      echo -e 'set ignorecase\n\
@@ -46,16 +51,19 @@ set noerrorbells\n\
 syntax enable\n\
 set mouse-=a' > ~/.vimrc; \
   fi && \
-  ############################################################
+  echo "#################################################" && \
   echo "Installing slapd..." && \
+  echo "#################################################" && \
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections && \
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections && \
   apt-get install --no-install-recommends -y slapd ldap-utils && \
   echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info  && \
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd && \
-  ############################################################
+  #
+  echo "#################################################" && \
   echo "Installing pqChecker password quality checker module..." && \
+  echo "#################################################" && \
   # https://www.meddeb.net/pqchecker/
   apt-get install --no-install-recommends -y curl && \
   curl -k -o /tmp/pqchecker.deb -SL "${PQCHECKER_URL}" && \
@@ -63,18 +71,25 @@ set mouse-=a' > ~/.vimrc; \
   dpkg -i /tmp/pqchecker.deb && \
   rm /tmp/pqchecker.deb && \
   apt-get remove --auto-remove -y curl && \
-  ############################################################
+  #
+  echo "#################################################" && \
   echo "Moving config and data directories..." && \
+  echo "#################################################" && \
   mv /etc/ldap/slapd.d /etc/ldap/slapd.d_orig && \
   mkdir /etc/ldap/slapd.d && \
   mv /var/lib/ldap /var/lib/ldap_orig && \
   mkdir /var/lib/ldap && \
-  ############################################################
+  #
+  echo "#################################################" && \
   echo "apt-get clean up..." && \
+  echo "#################################################" && \
+  apt-get remove apt-utils -y && \
   apt-get clean autoclean && \
   apt-get autoremove --purge -y && \
-  ############################################################
+  #
+  echo "#################################################" && \
   echo "Removing logs, caches and temp files..." && \
+  echo "#################################################" && \
   rm -rf /var/cache/{apt,debconf} \
      /var/lib/apt/lists/* \
      /var/log/{apt,alternatives.log,bootstrap.log,dpkg.log} \
