@@ -25,6 +25,8 @@ trap 'echo >&2 "$(date +%H:%M:%S) Error - exited with status $? at line $LINENO:
 #################################################
 docker_registry=${DOCKER_REGISTRY:-docker.io}
 image_repo=${DOCKER_IMAGE_REPO:-vegardit/openldap}
+base_image_name=${DOCKER_BASE_IMAGE:-debian:buster-slim}
+base_image_tag=${base_image_name#*:}
 image_name=$image_repo:${DOCKER_IMAGE_TAG:-latest}
 
 
@@ -60,6 +62,7 @@ docker build "$project_root/image" \
    --pull \
    `# using the current date as value for BASE_LAYER_CACHE_KEY, i.e. the base layer cache (that holds system packages with security updates) will be invalidate once per day` \
    --build-arg BASE_LAYER_CACHE_KEY=$base_layer_cache_key \
+   --build-arg BASE_IMAGE=$base_image_name \
    --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
    --build-arg GIT_BRANCH="${GIT_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" \
    --build-arg GIT_COMMIT_DATE="$(date -d @$(git log -1 --format='%at') --utc +'%Y-%m-%d %H:%M:%S UTC')" \
