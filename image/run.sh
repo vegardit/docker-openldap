@@ -17,7 +17,7 @@ if [ -z "${BASH_VERSINFO:-}" ]; then /usr/bin/env bash "$0" "$@"; exit; fi
 
 set -o pipefail
 
-trap 'echo >&2 "$(date +%H:%M:%S) Error - exited with status $? at line $LINENO:"; pr -tn $0 | tail -n+$((LINENO - 3)) | head -n7' ERR
+trap 'status=$?; echo >&2 "$(date +%H:%M:%S) Error - exited with status $status at line $LINENO:"; pr -tn $0 | tail -n+$((LINENO - 3)) | head -n7' ERR
 
 if [ "${DEBUG_RUN_SH:-}" == "1" ]; then
    set -x
