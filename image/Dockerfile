@@ -1,4 +1,5 @@
-# Copyright 2019-2020 by Vegard IT GmbH, Germany, https://vegardit.com
+#syntax=docker/dockerfile:1.2
+# Copyright 2019-2021 by Vegard IT GmbH, Germany, https://vegardit.com
 # SPDX-License-Identifier: Apache-2.0
 #
 # Author: Sebastian Thomschke, Vegard IT GmbH
@@ -6,8 +7,8 @@
 # https://github.com/vegardit/docker-openldap
 #
 
-# https://hub.docker.com/_/debian?tab=tags&name=buster-slim
-ARG BASE_IMAGE=debian:buster-slim
+# https://hub.docker.com/_/debian?tab=tags&name=stable-slim
+ARG BASE_IMAGE=debian:stable-slim
 
 FROM ${BASE_IMAGE}
 
@@ -17,47 +18,32 @@ USER root
 
 SHELL ["/bin/bash", "-c"]
 
-# if set to 1 debug tools are added to the image (htop,less,mc,vim)
-ARG DEBUG_BUILD=0
-
-ARG PQCHECKER_URL=https://www.meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
-ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
-
 ARG DEBIAN_FRONTEND=noninteractive
 ARG LC_ALL=C
 
 ARG BASE_LAYER_CACHE_KEY
+ARG INSTALL_SUPPORT_TOOLS=0
 
-RUN \
+ARG PQCHECKER_URL=https://www.meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
+ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
+
+RUN --mount=type=bind,source=.shared,target=/mnt/shared \
   set -eu && \
-  echo "#################################################" && \
-  echo "Installing OS updates..." && \
-  echo "#################################################" && \
-  apt-get update -y && \
-  # https://github.com/phusion/baseimage-docker/issues/319
-  apt-get install --no-install-recommends -y apt-utils 2> >( grep -v 'debconf: delaying package configuration, since apt-utils is not installed' >&2 ) && \
-  apt-get upgrade -y && \
+  /mnt/shared/cmd/debian-install-os-updates.sh && \
+  /mnt/shared/cmd/debian-install-support-tools.sh && \
   #
-  if [ "${DEBUG_BUILD}" = "1" ]; then \
-     echo "#################################################" && \
-     echo "Installing debugging tools..." && \
-     echo "#################################################" && \
-     apt-get install --no-install-recommends -y libcomerr2 mc && \
-     apt-get install --no-install-recommends -y htop less procps vim && \
-     echo -e 'set ignorecase\n\
-set showmatch\n\
-set novisualbell\n\
-set noerrorbells\n\
-syntax enable\n\
-set mouse-=a' > ~/.vimrc; \
-  fi && \
+  echo "#################################################" && \
+  echo "Installing tini..." && \
+  echo "#################################################" && \
+  apt-get install --no-install-recommends -y tini && \
+  #
   echo "#################################################" && \
   echo "Installing slapd..." && \
   echo "#################################################" && \
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections && \
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections && \
   apt-get install --no-install-recommends -y slapd ldap-utils && \
-  echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info  && \
+  echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info && \
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd && \
   #
@@ -80,20 +66,7 @@ set mouse-=a' > ~/.vimrc; \
   mv /var/lib/ldap /var/lib/ldap_orig && \
   mkdir /var/lib/ldap && \
   #
-  echo "#################################################" && \
-  echo "apt-get clean up..." && \
-  echo "#################################################" && \
-  apt-get remove apt-utils -y && \
-  apt-get clean autoclean && \
-  apt-get autoremove --purge -y && \
-  #
-  echo "#################################################" && \
-  echo "Removing logs, caches and temp files..." && \
-  echo "#################################################" && \
-  rm -rf /var/cache/{apt,debconf} \
-     /var/lib/apt/lists/* \
-     /var/log/{apt,alternatives.log,bootstrap.log,dpkg.log} \
-     /tmp/* /var/tmp/*
+  /mnt/shared/cmd/debian-cleanup.sh
 
 ARG BUILD_DATE
 ARG GIT_BRANCH
@@ -109,8 +82,8 @@ LABEL \
 
 # Default configuration: can be overridden at the docker command line
 ENV \
-  DEBUG_RUN_SH=0  \
   INIT_SH_FILE='' \
+  #
   LDAP_INIT_ORG_DN='o=example.com' \
   LDAP_INIT_ORG_NAME='Example Corporation' \
   LDAP_INIT_ADMIN_GROUP_DN='cn=ldapadmins,ou=Groups,${LDAP_INIT_ORG_DN}' \
@@ -130,21 +103,23 @@ ENV \
   LDAP_OPENLDAP_UID='' \
   LDAP_OPENLDAP_GID=''
 
-COPY ldifs /opt/ldifs
-COPY run.sh /opt/run.sh
-
 RUN \
-  echo "GIT_REPO:    $GIT_REPO_URL" > /opt/build_info && \
-  echo "GIT_BRANCH:  $GIT_BRANCH" >> /opt/build_info && \
-  echo "GIT_COMMIT:  $GIT_COMMIT_HASH @ $GIT_COMMIT_DATE" >> /opt/build_info  && \
-  echo "IMAGE_BUILD: $BUILD_DATE" >> /opt/build_info && \
+  set -eu && \
+  echo -e "\
+GIT_REPO:    $GIT_REPO_URL\n\
+GIT_BRANCH:  $GIT_BRANCH\n\
+GIT_COMMIT:  $GIT_COMMIT_HASH @ $GIT_COMMIT_DATE\n\
+IMAGE_BUILD: $BUILD_DATE\n" >/opt/build_info && \
   cat /opt/build_info
+
+COPY image/ldifs /opt/ldifs
+COPY image/run.sh /opt/run.sh
+COPY .shared/lib/bash-init.sh /opt/bash-init.sh
 
 VOLUME ["/etc/ldap/slapd.d", "/var/lib/ldap"]
 
 EXPOSE 389
 
-ENTRYPOINT ["/bin/sh", "-c"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# exec is required for propagating SIGTERM from docker to child process
-CMD ["exec /bin/bash /opt/run.sh"]
+CMD ["/bin/bash", "/opt/run.sh"]

@@ -12,7 +12,6 @@ services:
     # https://github.com/vegardit/docker-openldap
     image: vegardit/openldap:latest # https://hub.docker.com/r/vegardit/openldap
     environment:
-      #DEBUG_RUN_SH: 1
       LDAP_INIT_ORG_DN: o=example.com
       LDAP_INIT_ORG_NAME: Example Inc.
       LDAP_INIT_ROOT_USER_DN: uid=admin,o=example.com

@@ -1,6 +1,8 @@
 # Local work folder that is not checked in
 _LOCAL/
 
+.shared
+
 # Eclipse
 .apt_generated/
 .checkstyle

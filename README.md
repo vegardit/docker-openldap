@@ -4,7 +4,6 @@
 [![License](https://img.shields.io/github/license/vegardit/docker-openldap.svg?label=license)](#license)
 [![Docker Pulls](https://img.shields.io/docker/pulls/vegardit/openldap.svg)](https://hub.docker.com/r/vegardit/openldap)
 [![Docker Stars](https://img.shields.io/docker/stars/vegardit/openldap.svg)](https://hub.docker.com/r/vegardit/openldap)
-[![Docker Image Size](https://images.microbadger.com/badges/image/vegardit/openldap.svg)](https://hub.docker.com/r/vegardit/openldap)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 1. [What is it?](#what-is-it)
@@ -22,7 +21,7 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image based on the [Debian](https://www.debian.org/) docker image [`debian:buster-slim`](https://hub.docker.com/_/debian?tab=tags&name=buster-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
+Opinionated docker image based on the [Debian](https://www.debian.org/) docker image [`debian:stable-slim`](https://hub.docker.com/_/debian?tab=tags&name=stable-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
 
 It is automatically built **daily** to include the latest OS security fixes.
 
