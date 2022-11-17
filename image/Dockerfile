@@ -24,8 +24,12 @@ ARG LC_ALL=C
 ARG BASE_LAYER_CACHE_KEY
 ARG INSTALL_SUPPORT_TOOLS=0
 
-ARG PQCHECKER_URL=https://www.meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
-ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
+#TODO site is down:
+#ARG PQCHECKER_URL=https://www.meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
+#ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
+
+ARG PQCHECKER_URL=https://github.com/NoxInmortus/docker-build-pqchecker/releases/download/2.0.0-2.4.57/pqchecker_2.0.0-1_amd64.deb
+ARG PQCHECKER_MD5=cdacb0a13585cc459f9fa387ce78c51b
 
 RUN --mount=type=bind,source=.shared,target=/mnt/shared \
   set -eu && \
