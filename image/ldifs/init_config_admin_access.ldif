@@ -1,0 +1,7 @@
+dn: olcDatabase={0}config,cn=config
+changetype: modify
+add: olcAccess
+olcAccess: to *
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
+  by * none

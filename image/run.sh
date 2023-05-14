@@ -138,6 +138,10 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    ldif add    -Y EXTERNAL /opt/ldifs/init_module_unique.ldif
    ldif add    -Y EXTERNAL /opt/ldifs/init_module_ppolicy.ldif
 
+   if [ "${LDAP_INIT_ALLOW_CONFIG_ACCESS:-false}" == "true" ]; then
+     ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
+   fi
+
    LDAP_INIT_ORG_DN_ATTR=$(substr_before $LDAP_INIT_ORG_DN "," | str_replace "=" ": ") # referenced by init_org_tree.ldif
    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
