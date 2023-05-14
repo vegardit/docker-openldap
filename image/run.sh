@@ -109,7 +109,14 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
       fi
    done
 
+   if [ -z "${LDAP_INIT_ROOT_USER_PW:-}" ]; then
+     log ERROR "LDAP_INIT_ROOT_USER_PW variable is not set!"
+     exit 1
+   fi
+
+   # LDAP_INIT_ROOT_USER_PW_HASHED is used in /opt/ldifs/init_mdb_acls.ldif
    LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
+
    /etc/init.d/slapd start
    sleep 3
 
@@ -158,7 +165,7 @@ if [ -n "${LDAP_BACKUP_TIME:-}" ]; then
    log INFO "--------------------------------------------"
    log INFO "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
    if [[ "$LDAP_BACKUP_TIME" != +([0-9][0-9]:[0-9][0-9]) ]]; then
-      log INFO "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
+      log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
       exit 1
    fi
 
