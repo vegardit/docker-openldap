@@ -9,6 +9,7 @@
 1. [What is it?](#what-is-it)
 1. [Configuration](#config)
    1. [Initial configuration](#initial-config)
+   1. [Initial LDAP tree](#initial_ldaptree)
    1. [Customizing the Password Policy](#ppolicy)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
    1. [Periodic LDAP Backup](#backup)
@@ -35,7 +36,7 @@ To keep the image light and simple, it does not configure TLS. Instead we recomm
 Various parts of the LDAP server can be configured via environment variables. All environment variables starting with `LDAP_INIT_`
 are only evaluated on the **first** container launch. Changing their values later has no effect when restarting or updating the container.
 
-To customize the initial configuration you can set the following environment variables:
+To customize the **initial** configuration you can set the following environment variables:
 
 ```sh
 LDAP_INIT_ORG_DN='dc=example,dc=com'
@@ -47,24 +48,45 @@ LDAP_INIT_RFC2307BIS_SCHEMA=0 # 0=use NIS (RFC2307) schema, 1=use RFC2307bis sch
 LDAP_INIT_ALLOW_CONFIG_ACCESS='true' # if set to true, the "cn=config" namespace can be read/edited by LDAP admins
 ```
 
-Environment variables can for example be set using `docker run` with `-e`, e.g.
+Environment variables can for example be set in one of the following ways:
 
-```sh
-docker run -itd \
-  -e LDAP_INIT_ORG_DN='o=yourorg' \
-  -e LDAP_INIT_ROOT_USER_PW='newpassword' \
-  -e LDAP_INIT_ORG_NAME='Company Inc' \
-  -e LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12' \
-  vegardit/openldap
-```
+1. Using `docker run` with `-e`, e.g.
 
-Alternatively you can use an [env-file](https://docs.docker.com/compose/env-file/) to store all changed variables and use the option `--env-file` with `docker run`, e.g.:
+   ```sh
+   docker run -itd \
+     -e LDAP_INIT_ORG_DN='o=yourorg' \
+     -e LDAP_INIT_ROOT_USER_PW='newpassword' \
+     -e LDAP_INIT_ORG_NAME='Company Inc' \
+     -e LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12' \
+     vegardit/openldap
+   ```
 
-```sh
-docker run -itd --env-file environment vegardit/openldap
-```
+1. Using an [env-file](https://docs.docker.com/compose/env-file/) to store all changed variables and use the option `--env-file` with `docker run`, e.g.:
 
-In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
+   ```sh
+   docker run -itd --env-file environment vegardit/openldap
+   ```
+
+   In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
+
+1. Setting the environment variable `INIT_SH_FILE` pointing to a shell script that should be sourced during the container start.
+
+   ```sh
+   # /path/on/docker/host/my_init.sh
+   LDAP_INIT_ORG_DN='o=yourorg'
+   LDAP_INIT_ROOT_USER_PW='newpassword'
+   LDAP_INIT_ORG_NAME='Company Inc'
+   LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12'
+   ```
+
+   ```sh
+   docker run -itd
+     -e INIT_SH_FILE=/mnt/my_init.sh
+     -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro
+     vegardit/openldap
+   ```
+
+### <a name="initial_ldaptree"></a>Initial LDAP tree
 
 The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
 You can mount a custom file at `/opt/ldifs/init_org_tree.ldif` if you require changes.
