@@ -21,10 +21,12 @@ olcAccess: {1}to *
   by anonymous auth
   by * none
 olcAccess: {2}to attrs=userPassword
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_PASSWORD_RESET_GROUP_DN}" write
   by self write
   by anonymous auth
   by * none
 olcAccess: {3}to attrs=sshPublicKey
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_PASSWORD_RESET_GROUP_DN}" write
   by self write
   by users read
   by * none

@@ -42,18 +42,19 @@ sshPublicKey:
 ##############################
 # Technical Accounts
 ##############################
-dn: uid=ldapbind,ou=TechnicalAccounts,ou=Users,${LDAP_INIT_ORG_DN}
+dn: uid=self-service-password,ou=TechnicalAccounts,ou=Users,${LDAP_INIT_ORG_DN}
 ou: TechnicalAccounts
 ou: Users
-description: ldapbind user
+description: Used by Self Service Password app to reset password/sshPublicKey attributes of other users
 objectClass: top
 objectClass: inetOrgPerson
 objectClass: organizationalPerson
 objectClass: person
-uid: ldapbind
-cn: ldapbind
-sn: ldapbind
+uid: self-service-password
+cn: self-service-password
+sn: self-service-password
 userPassword: CHANGE@it
+
 
 ##############################
 # Groups
@@ -66,3 +67,11 @@ objectClass: groupOfUniqueNames
 cn: ldap-admins
 uniqueMember: uid=alice,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
 uniqueMember: uid=bob,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
+
+dn: cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}
+ou: Groups
+description: Users that can set password and sshPublicKey attributes of other users
+objectClass: top
+objectClass: groupOfUniqueNames
+cn: ldap-password-reset
+uniqueMember: uid=self-service-password,ou=TechnicalAccounts,ou=Users,${LDAP_INIT_ORG_DN}
