@@ -13,24 +13,27 @@ replace: olcAccess
 # The ".base" portion of the ACL restricts clients to querying only the top level
 olcAccess: {0}to dn.base=""
   by * read
-# allow ldap admins to change all attributes
-olcAccess: {1}to *
-  by dn="${LDAP_INIT_ROOT_USER_DN}" write
-  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
+olcAccess: {1}to attrs=shadowLastChange
+  by self write
   by users read
-  by anonymous auth
   by * none
 olcAccess: {2}to attrs=userPassword
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
   by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_PASSWORD_RESET_GROUP_DN}" write
   by self write
   by anonymous auth
   by * none
 olcAccess: {3}to attrs=sshPublicKey
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
   by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_PASSWORD_RESET_GROUP_DN}" write
   by self write
   by users read
   by * none
-olcAccess: {4}to attrs=shadowLastChange
-  by self write
+olcAccess: {4}to *
+  by dn="${LDAP_INIT_ROOT_USER_DN}" write
+  by group/groupOfUniqueNames/uniqueMember="${LDAP_INIT_ADMIN_GROUP_DN}" write
   by users read
+  by anonymous auth
   by * none
