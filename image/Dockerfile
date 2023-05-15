@@ -87,7 +87,7 @@ ENV \
   #
   LDAP_INIT_ORG_DN='o=example.com' \
   LDAP_INIT_ORG_NAME='Example Corporation' \
-  LDAP_INIT_ADMIN_GROUP_DN='cn=ldapadmins,ou=Groups,${LDAP_INIT_ORG_DN}' \
+  LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_ROOT_USER_PW='' \
   LDAP_INIT_ALLOW_CONFIG_ACCESS='false' \

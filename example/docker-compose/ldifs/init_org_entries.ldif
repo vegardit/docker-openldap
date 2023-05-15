@@ -58,11 +58,11 @@ userPassword: CHANGE@it
 ##############################
 # Groups
 ##############################
-dn: cn=ldapadmins,ou=Groups,${LDAP_INIT_ORG_DN}
+dn: cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}
 ou: Groups
 description: LDAP Administrators Group
 objectClass: top
 objectClass: groupOfUniqueNames
-cn: ldapadmins
+cn: ldap-admins
 uniqueMember: uid=alice,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}
 uniqueMember: uid=bob,ou=Employees,ou=Users,${LDAP_INIT_ORG_DN}

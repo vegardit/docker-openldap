@@ -62,11 +62,11 @@ userPassword: changeit
 ##############################
 # Groups
 ##############################
-dn: cn=ldapadmins,ou=Groups,${LDAP_INIT_ORG_DN}
+dn: cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}
 ou: Groups
 objectClass: top
 objectClass: groupOfUniqueNames
-cn: ldapadmins
+cn: ldap-admins
 description: Ldap Admin Group
 uniqueMember: uid=employee1,ou=External,ou=Users,${LDAP_INIT_ORG_DN}
 
