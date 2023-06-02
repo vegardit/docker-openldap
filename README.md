@@ -22,7 +22,7 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image based on the [Debian](https://www.debian.org/) docker image [`debian:stable-slim`](https://hub.docker.com/_/debian?tab=tags&name=stable-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
+Opinionated docker image is currently based on the [Debian](https://www.debian.org/) docker image [`debian:bullseye-slim`](https://hub.docker.com/_/debian?tab=tags&name=bullseye-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
 
 It is automatically built **daily** to include the latest OS security fixes.
 

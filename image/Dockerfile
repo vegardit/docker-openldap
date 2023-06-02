@@ -7,8 +7,8 @@
 # https://github.com/vegardit/docker-openldap
 #
 
-# https://hub.docker.com/_/debian?tab=tags&name=stable-slim
-ARG BASE_IMAGE=debian:stable-slim
+# https://hub.docker.com/_/debian?tab=tags&name=bullseye-slim
+ARG BASE_IMAGE=debian:bullseye-slim
 
 FROM ${BASE_IMAGE}
 
