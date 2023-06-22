@@ -68,7 +68,7 @@ objectClass: top
 objectClass: groupOfUniqueNames
 cn: ldap-admins
 description: Ldap Admin Group
-uniqueMember: uid=employee1,ou=External,ou=Users,${LDAP_INIT_ORG_DN}
+uniqueMember: uid=employee1,ou=Internal,ou=Users,${LDAP_INIT_ORG_DN}
 
 dn: cn=employees,ou=Groups,${LDAP_INIT_ORG_DN}
 ou: Groups
@@ -76,7 +76,7 @@ objectClass: top
 objectClass: groupOfUniqueNames
 cn: employees
 description: Employees Group
-uniqueMember: uid=employee1,ou=External,ou=Users,${LDAP_INIT_ORG_DN}
+uniqueMember: uid=employee1,ou=Internal,ou=Users,${LDAP_INIT_ORG_DN}
 
 dn: cn=guests,ou=Groups,${LDAP_INIT_ORG_DN}
 ou: Groups
