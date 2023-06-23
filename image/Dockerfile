@@ -1,11 +1,12 @@
-#syntax=docker/dockerfile:1.2
-# Copyright 2019-2021 by Vegard IT GmbH, Germany, https://vegardit.com
+#syntax=docker/dockerfile:1.4
+# see https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/syntax.md#user-content-syntax
+# see https://docs.docker.com/build/dockerfile/frontend/
+# see https://docs.docker.com/engine/reference/builder/#syntax
+#
+# SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
+# SPDX-FileContributor: Sebastian Thomschke
 # SPDX-License-Identifier: Apache-2.0
-#
-# Author: Sebastian Thomschke, Vegard IT GmbH
-#
-# https://github.com/vegardit/docker-openldap
-#
+# SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
 # https://hub.docker.com/_/debian?tab=tags&name=bullseye-slim
 ARG BASE_IMAGE=debian:bullseye-slim
