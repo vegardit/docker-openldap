@@ -8,8 +8,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
-# https://hub.docker.com/_/debian?tab=tags&name=bullseye-slim
-ARG BASE_IMAGE=debian:bullseye-slim
+# https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim
+ARG BASE_IMAGE=debian:bookworm-slim
 
 # see https://github.com/hadolint/hadolint/wiki/DL3006
 # hadolint ignore=DL3006

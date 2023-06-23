@@ -123,7 +123,6 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
       ldif add    -Y EXTERNAL /opt/ldifs/schema_rfc2307bis02.ldif
    fi
 
-   ldif add    -Y EXTERNAL /etc/ldap/schema/ppolicy.ldif
    ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
    ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
 

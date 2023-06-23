@@ -18,7 +18,7 @@ source "$shared_lib/lib/build-image-init.sh"
 # specify target repo and image name
 #################################################
 image_repo=${DOCKER_IMAGE_REPO:-vegardit/openldap}
-base_image_name=${DOCKER_BASE_IMAGE:-debian:bullseye-slim}
+base_image_name=${DOCKER_BASE_IMAGE:-debian:bookworm-slim}
 base_image_tag=${base_image_name#*:}
 image_name=$image_repo:latest
 
@@ -63,8 +63,8 @@ echo "ldap_version=$ldap_version"
 #################################################
 declare -a tags=()
 tags+=($image_name) # :latest
-tags+=($image_repo:${ldap_version})       # :2.4.47
-tags+=($image_repo:${ldap_version%.*}.x)  # :2.4.x
+tags+=($image_repo:${ldap_version})       # :2.5.12
+tags+=($image_repo:${ldap_version%.*}.x)  # :2.5.x
 tags+=($image_repo:${ldap_version%%.*}.x) # :2.x
 
 for tag in ${tags[@]}; do

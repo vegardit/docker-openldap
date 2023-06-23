@@ -22,7 +22,7 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image is currently based on the [Debian](https://www.debian.org/) docker image [`debian:bullseye-slim`](https://hub.docker.com/_/debian?tab=tags&name=bullseye-slim) to run an [OpenLDAP 2.4](https://www.openldap.org/doc/admin24/) server.
+Opinionated docker image is currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
 It is automatically built **daily** to include the latest OS security fixes.
 
@@ -217,7 +217,7 @@ None    (32768)  only messages that get logged whatever log level is set
 
 ## <a name="references"></a>References
 
-- OpenLDAP Software 2.4 Administrator's Guide https://www.openldap.org/doc/admin24/guide.html
+- OpenLDAP Software 2.5 Administrator's Guide https://www.openldap.org/doc/admin25/guide.html
 - OpenLDAP Online Configuration Reference https://tylersguides.com/guides/openldap-online-configuration-reference/
 - slapd-config(5) - Linux man page https://linux.die.net/man/5/slapd-config
 
