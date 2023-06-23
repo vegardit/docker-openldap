@@ -59,6 +59,8 @@ Environment variables can for example be set in one of the following ways:
      -e LDAP_INIT_ROOT_USER_PW='newpassword' \
      -e LDAP_INIT_ORG_NAME='Company Inc' \
      -e LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12' \
+     -v /my_data/ldap/var/:/var/lib/ldap/ \
+     -v /my_data/ldap/etc/:/etc/ldap/slapd.d/ \
      vegardit/openldap
    ```
 
