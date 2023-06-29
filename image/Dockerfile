@@ -8,7 +8,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
-# https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim
+# https://hub.docker.com/_/debian/tags?name=bookworm-slim
 ARG BASE_IMAGE=debian:bookworm-slim
 
 # see https://github.com/hadolint/hadolint/wiki/DL3006
@@ -26,8 +26,9 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
 ARG LC_ALL=C
 
-ARG BASE_LAYER_CACHE_KEY
 ARG INSTALL_SUPPORT_TOOLS=0
+
+ARG BASE_LAYER_CACHE_KEY
 
 #ARG PQCHECKER_URL=https://meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
 ARG PQCHECKER_URL=https://github.com/pqchecker/pqchecker-binaries/raw/main/deb/8/pqchecker_2.0.0_amd64.deb

@@ -19,7 +19,6 @@ source "$shared_lib/lib/build-image-init.sh"
 #################################################
 image_repo=${DOCKER_IMAGE_REPO:-vegardit/openldap}
 base_image_name=${DOCKER_BASE_IMAGE:-debian:bookworm-slim}
-base_image_tag=${base_image_name#*:}
 image_name=$image_repo:latest
 
 
