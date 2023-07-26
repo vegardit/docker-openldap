@@ -114,14 +114,36 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    # LDAP_INIT_ROOT_USER_PW_HASHED is used in /opt/ldifs/init_mdb_acls.ldif
    LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
 
-   /etc/init.d/slapd start
-   sleep 3
-
    if [ "${LDAP_INIT_RFC2307BIS_SCHEMA:-}" == "1" ]; then
       log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
-      ldapdelete  -Y EXTERNAL cn={2}nis,cn=schema,cn=config
-      ldif add    -Y EXTERNAL /opt/ldifs/schema_rfc2307bis02.ldif
+
+      log INFO "Exporting initial slapd config..."
+      initial_sldapd_config=$(slapcat -n0)
+
+      log INFO "Delete initial slapd config..."
+      find /etc/ldap/slapd.d/ -type f -delete
+
+      log INFO "Create modified sldapd config file..."
+      # create ldif file where "{2}nis,cn=schema,cn=config" schema is replaced by "{2}rfc2307bis,cn=schema,cn=config"
+      # 1. add all schema entries before "dn: cn={2}nis,cn=schema,cn=config" from initial config to new config file
+      echo "${initial_sldapd_config%%dn: cn=\{2\}nis,cn=schema,cn=config*}" > /tmp/config.ldif
+      # 2. add "dn: cn={2}rfc2307bis,cn=schema,cn=config" entry
+      sed 's/rfc2307bis/{2}rfc2307bis/g' /opt/ldifs/schema_rfc2307bis02.ldif >> /tmp/config.ldif
+      echo >> /tmp/config.ldif # add empty new line
+      # 3. add entry "dn: cn={3}inetorgperson,cn=schema,cn=config" and following entries from initial config to new config file
+      echo "dn: cn={3}inetorgperson,cn=schema,cn=config${initial_sldapd_config#*dn: cn=\{3\}inetorgperson,cn=schema,cn=config}" >> /tmp/config.ldif
+
+      log INFO "Register modified slapd config with RFC2307bis schema..."
+      slapadd -F /etc/ldap/slapd.d -n 0 -l /tmp/config.ldif
+      chown openldap:openldap -R /etc/ldap/slapd.d
    fi
+
+   /etc/init.d/slapd start
+   # await ldap server start
+   for i in {1..8}; do
+     ldapwhoami -H ldapi:/// && break
+     sleep 1
+   done
 
    ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
    ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
