@@ -8,7 +8,7 @@ ou: Policies
 objectClass: top
 objectClass: organizationalUnit
 
-dn: cn=DefaultPasswordPolicy,ou=Policies,${LDAP_INIT_ORG_DN}
+dn: ${LDAP_INIT_PPOLICY_DEFAULT_DN:-cn=DefaultPasswordPolicy,ou=Policies,${LDAP_INIT_ORG_DN}}
 objectClass: top
 objectClass: device
 objectClass: pwdPolicy
