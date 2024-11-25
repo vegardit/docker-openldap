@@ -7,7 +7,7 @@ dn: ${LDAP_INIT_ORG_DN}
 description: ${LDAP_INIT_ORG_NAME}
 objectClass: top
 objectClass: organization
-${LDAP_INIT_ORG_DN_ATTR}
+o: ${LDAP_INIT_ORG_ATTR_O}
 
 dn: ou=Groups,${LDAP_INIT_ORG_DN}
 ou: Groups

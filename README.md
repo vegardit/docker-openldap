@@ -39,8 +39,9 @@ are only evaluated on the **first** container launch. Changing their values late
 To customize the **initial** configuration you can set the following environment variables:
 
 ```sh
-LDAP_INIT_ORG_DN='dc=example,dc=com'
+LDAP_INIT_ORG_DN='DC=example,DC=com'
 LDAP_INIT_ORG_NAME='Example Corporation'
+LDAP_INIT_ORG_ATTR_O='' # optional, if not defined will be derived from LDAP_INIT_ORG_DN, e.g. DC=example,DC=com -> example.com
 LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}'
 LDAP_INIT_PASSWORD_RESET_GROUP_DN='cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}' # users in this group can set password/sshPublicKey attribute of other users
 LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}'
@@ -55,9 +56,9 @@ Environment variables can for example be set in one of the following ways:
 
    ```sh
    docker run -itd \
-     -e LDAP_INIT_ORG_DN='o=yourorg' \
+     -e LDAP_INIT_ORG_DN='DC=example,DC=com' \
      -e LDAP_INIT_ROOT_USER_PW='newpassword' \
-     -e LDAP_INIT_ORG_NAME='Company Inc' \
+     -e LDAP_INIT_ORG_NAME='Example Corporation' \
      -e LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12' \
      -v /my_data/ldap/var/:/var/lib/ldap/ \
      -v /my_data/ldap/etc/:/etc/ldap/slapd.d/ \
@@ -76,9 +77,9 @@ Environment variables can for example be set in one of the following ways:
 
    ```sh
    # /path/on/docker/host/my_init.sh
-   LDAP_INIT_ORG_DN='o=yourorg'
+   LDAP_INIT_ORG_DN='DC=example,DC=com'
    LDAP_INIT_ROOT_USER_PW='newpassword'
-   LDAP_INIT_ORG_NAME='Company Inc'
+   LDAP_INIT_ORG_NAME='Example Corporation'
    LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12'
    ```
 

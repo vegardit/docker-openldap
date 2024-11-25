@@ -12,7 +12,7 @@ services:
     # https://github.com/vegardit/docker-openldap
     image: vegardit/openldap:latest # https://hub.docker.com/r/vegardit/openldap
     environment:
-      LDAP_INIT_ORG_DN: o=example.com
+      LDAP_INIT_ORG_DN: DC=example,DC=com
       LDAP_INIT_ORG_NAME: Example Inc.
       LDAP_INIT_ROOT_USER_PW: CHANGE@it
       LDAP_BACKUP_TIME: # disable backup by setting to empty string
@@ -32,7 +32,7 @@ services:
       ###############################
       # PHP LDAP Admin (Port 8080)
       ###############################
-      PHPLDAPADMIN_LDAP_BASE: o=example.com
+      PHPLDAPADMIN_LDAP_BASE: DC=example,DC=com
       PHPLDAPADMIN_LDAP_CLIENT_TLS: 'false'
       PHPLDAPADMIN_LDAP_HOSTS: ldap_service
       ###############################
@@ -41,8 +41,8 @@ services:
       DEBUG_MODE: 'false'
       #LDAP connection https://ltb-project.org/documentation/self-service-password/1.3/config_ldap
       LDAP_URL: ldap://ldap_service
-      LDAP_BASE_DN: ou=Users,o=example.com
-      LDAP_USER_DN: uid=self-service-password,ou=TechnicalAccounts,ou=Users,o=example.com
+      LDAP_BASE_DN: ou=Users,DC=example,DC=com
+      LDAP_USER_DN: uid=self-service-password,ou=TechnicalAccounts,ou=Users,DC=example,DC=com
       LDAP_USER_PASSWORD: CHANGE@it
       LDAP_FILTER: '(\&(objectClass=inetOrgPerson)(uid={login}))' # backslash is mandatory!
       LDAP_LOGIN_ATTRIBUTE: 'uid'

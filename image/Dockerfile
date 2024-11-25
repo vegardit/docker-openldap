@@ -101,8 +101,9 @@ LABEL \
 ENV \
   INIT_SH_FILE='' \
   #
-  LDAP_INIT_ORG_DN='o=example.com' \
+  LDAP_INIT_ORG_DN='DC=example,DC=com' \
   LDAP_INIT_ORG_NAME='Example Corporation' \
+  LDAP_INIT_ORG_ATTR_O='' \
   LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_PASSWORD_RESET_GROUP_DN='cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}' \
