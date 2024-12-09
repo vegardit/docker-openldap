@@ -141,8 +141,8 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    /etc/init.d/slapd start
    # await ldap server start
    for i in {1..8}; do
-     ldapwhoami -H ldapi:/// && break
-     sleep 1
+      ldapwhoami -H ldapi:/// && break
+      sleep 1
    done
 
    ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
@@ -157,22 +157,31 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    ldif add    -Y EXTERNAL /opt/ldifs/init_module_ppolicy.ldif
 
    if [ "${LDAP_INIT_ALLOW_CONFIG_ACCESS:-false}" == "true" ]; then
-     ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
+      ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
    fi
 
-   if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
-     # derive LDAP_INIT_ORG_ATTR_O (referenced by init_org_tree.ldif) from LDAP_INIT_ORG_DN
-     if [[ "$LDAP_INIT_ORG_DN" =~ [oO]=([^,]*) ]]; then # check if "o=..." attribute is present in DN
-       # e.g. LDAP_INIT_ORG_DN="O=example.com"               -> LDAP_INIT_ORG_ATTR_O="example.com"
-       # e.g. LDAP_INIT_ORG_DN="O=Example,DC=example,DC=com" -> LDAP_INIT_ORG_ATTR_O="Example"
-       LDAP_INIT_ORG_DN_ATTR=${BASH_REMATCH[1]}
-     elif [[ "${LDAP_INIT_ORG_DN}" =~ [dD][cC]= ]]; then
-       # e.g. LDAP_INIT_ORG_DN="DC=example,DC=com" -> LDAP_INIT_ORG_ATTR_O="example.com"
-       LDAP_INIT_ORG_DN_ATTR=$(echo $LDAP_INIT_ORG_DN | grep -ioP 'DC=\K[^,]+' | paste -sd '.')
-     else
-       log ERROR "Unable to derive required 'o' attribute of objectClass 'organization' from LDAP_INIT_ORG_DN='$LDAP_INIT_ORG_DN'"
-       exit 1
-     fi
+   # calculate LDAP_INIT_ORG_COMPUTED_ATTRS variable, referenced in init_org_tree.ldif
+   if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]] && [[ "$LDAP_INIT_ORG_DN" =~ [oO]=([^,]*) ]]; then
+      # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "O=..." is present
+      # e.g. LDAP_INIT_ORG_DN="O=example.com"               -> "o: example.com"
+      # e.g. LDAP_INIT_ORG_DN="O=Example,DC=example,DC=com" -> "o: Example"
+      LDAP_INIT_ORG_ATTR_O=${BASH_REMATCH[1]}
+   fi
+   if [[ "$LDAP_INIT_ORG_DN" =~ [dD][cC]=([^,]*) ]]; then
+      LDAP_INIT_ORG_ATTR_DC=${BASH_REMATCH[1]}
+      # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "DC=..." is present
+      if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
+         # e.g. LDAP_INIT_ORG_DN="DC=example,DC=com" -> "o: example.com"
+         LDAP_INIT_ORG_ATTR_O=$(echo "$LDAP_INIT_ORG_DN" | grep -ioP 'DC=\K[^,]+' | paste -sd '.')
+      fi
+      LDAP_INIT_ORG_COMPUTED_ATTRS="objectClass: dcObject
+o: $LDAP_INIT_ORG_ATTR_O
+dc: $LDAP_INIT_ORG_ATTR_DC"
+   elif [[ -n ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
+      LDAP_INIT_ORG_COMPUTED_ATTRS="o: $LDAP_INIT_ORG_ATTR_O"
+   else
+      log ERROR "Unable to derive required 'o' attribute of objectClass 'organization' from LDAP_INIT_ORG_DN='$LDAP_INIT_ORG_DN'"
+      exit 1
    fi
 
    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
