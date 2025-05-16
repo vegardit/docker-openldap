@@ -22,7 +22,7 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image is currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
+Opinionated docker image currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
 It is automatically built **weekly** to include the latest OS security fixes.
 
@@ -71,7 +71,7 @@ Environment variables can for example be set in one of the following ways:
    docker run -itd --env-file environment vegardit/openldap
    ```
 
-   In environment file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
+   In the env-file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
 
 1. Setting the environment variable `INIT_SH_FILE` pointing to a shell script that should be sourced during the container start.
 
@@ -84,23 +84,23 @@ Environment variables can for example be set in one of the following ways:
    ```
 
    ```sh
-   docker run -itd
-     -e INIT_SH_FILE=/mnt/my_init.sh
-     -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro
+   docker run -itd \
+     -e INIT_SH_FILE=/mnt/my_init.sh \
+     -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro \
      vegardit/openldap
    ```
 
 ### <a name="initial_ldaptree"></a>Initial LDAP tree
 
 The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
-You can mount a custom file at `/opt/ldifs/init_org_tree.ldif` if you require changes.
+You can mount a custom file at that path if you need changes.
 
 LDAP entries (users, groups) are imported from [/opt/ldifs/init_org_entries.ldif](image/ldifs/init_org_entries.ldif).
-You can mount a custom file at `/opt/ldifs/init_org_entries.ldif` if you require changes.
+You can mount a custom file at that path if you need changes.
 
 ### <a name="ppolicy"></a>Customizing the Password Policy
 
-On **initial** container launch, the [password policy](https://www.openldap.org/doc/admin24/overlays.html#Password%20Policies) is imported from [/opt/ldifs/init_org_ppolicy.ldif](image/ldifs/init_org_ppolicy.ldif)
+On **initial** container launch, the [password policy](https://www.openldap.org/doc/admin24/overlays.html#Password%20Policies) is imported from [/opt/ldifs/init_org_ppolicy.ldif](image/ldifs/init_org_ppolicy.ldif).
 
 The following parameters can be modified via environment variables **before** initial container launch:
 
@@ -115,16 +115,16 @@ If more customizations are required, simply mount a custom policy file at `/opt/
 
 **Password Quality Checker:**
 
-[pqChecker](https://www.meddeb.net/pqchecker/) is configured as default password quality checker using the rule `0|01010101` with
+[pqChecker](https://www.meddeb.net/pqchecker/) is configured as the default password quality checker using the rule `0|01010101` with
 the following meaning:
 
 |Pos. |Value  |Effective Rule
 |----:|:-----:|:----------
-|0-1  | `0\|`|Don't broadcast passwords.
-|2-4  | `01` |Minimum 1 uppercase character.
-|5-6  | `01` |Minimum 1 lowercase character.
-|7-8  | `01` |Minimum 1 digit.
-|9-10 | `01` |Minimum 1 special character.
+|0-1  | `0\|` |Don't broadcast passwords.
+|2-4  | `01`  |Minimum 1 uppercase character.
+|5-6  | `01`  |Minimum 1 lowercase character.
+|7-8  | `01`  |Minimum 1 digit.
+|9-10 | `01`  |Minimum 1 special character.
 |11-..| empty | No characters are disallowed in passwords.
 
 The pqChecker rule syntax is explained here in more detail: https://www.meddeb.net/pqchecker/?Idx=2
@@ -137,7 +137,7 @@ LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user
 
-The UID/GID of the user running the OpenLDAP service can be aligned with the docker host, using the environment variables
+The UID/GID of the user running the OpenLDAP service can be aligned with the docker host using the environment variables
 `LDAP_OPENLDAP_UID` and `LDAP_OPENLDAP_GID`.
 
 During each container start it is verified that the given UID/GID matches the currently effective UID/GID. If not, the UID/GID
@@ -157,7 +157,11 @@ To disable automatic backup set an empty value for the environment variable `LDA
 
 ### <a name="timesync"></a>Synchronizing timezone/time with docker host
 
-To use the same timezone and/or time of the docker host you can run the docker image with `--volume /etc/localtime:/etc/localtime:ro --volume /etc/timezone:/etc/timezone:ro`
+To use the same timezone and/or time of the docker host you can run the image with:
+```sh
+--volume /etc/localtime:/etc/localtime:ro \
+--volume /etc/timezone:/etc/timezone:ro
+```
 
 Docker compose file example:
 ```yaml
@@ -174,15 +178,15 @@ services:
 
 #### DB Indexes
 
-The database indexes that are configured during initial container launch are imported from [/opt/ldifs/init_backend_indexes.ldif](image/ldifs/init_mdb_indexes.ldif)
+The database indexes configured during initial container launch are imported from [/opt/ldifs/init_backend_indexes.ldif](image/ldifs/init_mdb_indexes.ldif).
 
-To use other indexes, simply mount a custom file at `/opt/ldifs/init_backend_indexes.ldif` **before** initial container launch.
+To use other indexes, mount a custom file at that path **before** initial container launch.
 
 #### Memory usage
 
 The maximum number of open files is set to `1024` by default to prevent excessive RAM consumption as reported [here](https://github.com/docker/docker/issues/8231).
 
-The following environment variable can be used to increase this limit:
+Increase this limit with the following environment variable:
 
 ```sh
 LDAP_NOFILE_LIMIT=2048
@@ -196,7 +200,8 @@ The slapd service logs to stdout. You can change the active log levels by settin
 LDAP_LOG_LEVELS='Config Stats'
 ```
 
-The following [log levels](https://www.openldap.org/doc/admin24/slapdconfig.html#loglevel%20%3Clevel%3E) are available:
+Available [log levels](https://www.openldap.org/doc/admin24/slapdconfig.html#loglevel%20%3Clevel%3E):
+
 ```
 Any     (-1)     enable all debugging
 Trace   (1)      trace function calls
@@ -220,7 +225,7 @@ None    (32768)  only messages that get logged whatever log level is set
 
 - OpenLDAP Software 2.5 Administrator's Guide https://www.openldap.org/doc/admin25/guide.html
 - OpenLDAP Online Configuration Reference https://tylersguides.com/guides/openldap-online-configuration-reference/
-- slapd-config(5) - Linux man page https://linux.die.net/man/5/slapd-config
+- `slapd-config(5)` - Linux man page https://linux.die.net/man/5/slapd-config
 
 
 ## <a name="license"></a>License
