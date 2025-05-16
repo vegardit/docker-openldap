@@ -24,7 +24,7 @@
 
 Opinionated docker image is currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
-It is automatically built **daily** to include the latest OS security fixes.
+It is automatically built **weekly** to include the latest OS security fixes.
 
 To keep the image light and simple, it does not configure TLS. Instead we recommend configuring a [Traefik 2.x](https://traefik.io) [TCP service](https://docs.traefik.io/routing/services/#configuring-tcp-services) with e.g. an auto-renewing [Let's Encrypt configuration](https://docs.traefik.io/https/acme/) in front of the OpenLDAP service.
 
