@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
+# shellcheck disable=SC1091  # Not following: /opt/bash-init.sh was not specified as input
 source /opt/bash-init.sh
 
 #################################################
@@ -29,8 +30,10 @@ log INFO "Timezone is $(date +"%Z %z")"
 #################################################
 # load custom init script if specified
 #################################################
-if [[ -f $INIT_SH_FILE ]]; then
+if [[ -f ${INIT_SH_FILE:-} ]]; then
    log INFO "Loading [$INIT_SH_FILE]..."
+
+   # shellcheck disable=SC1090  # ShellCheck can't follow non-constant source
    source "$INIT_SH_FILE"
 fi
 
@@ -41,22 +44,22 @@ slapd -VVV 2>&1 | log INFO || true
 
 # Limit maximum number of open file descriptors otherwise slapd consumes two
 # orders of magnitude more of RAM, see https://github.com/docker/docker/issues/8231
-ulimit -n $LDAP_NOFILE_LIMIT
+ulimit -n "$LDAP_NOFILE_LIMIT"
 
 
 #################################################################
 # Adjust UID/GID and file permissions based on env var config
 #################################################################
-if [ -n "${LDAP_OPENLDAP_UID:-}" ]; then
+if [[ -n ${LDAP_OPENLDAP_UID:-} ]]; then
    effective_uid=$(id -u openldap)
-   if [ "$LDAP_OPENLDAP_UID" != "$effective_uid" ]; then
+   if [[ $LDAP_OPENLDAP_UID != "$effective_uid" ]]; then
       log INFO "Changing UID of openldap user from $effective_uid to $LDAP_OPENLDAP_UID..."
       usermod -o -u "$LDAP_OPENLDAP_UID" openldap
    fi
 fi
-if [ -n "${LDAP_OPENLDAP_GID:-}" ]; then
+if [[ -n ${LDAP_OPENLDAP_GID:-} ]]; then
    effective_gid=$(id -g openldap)
-   if [ "$LDAP_OPENLDAP_GID" != "$effective_gid" ]; then
+   if [[ $LDAP_OPENLDAP_GID != "$effective_gid" ]]; then
       log INFO "Changing GID of openldap user from $effective_gid to $LDAP_OPENLDAP_GID..."
       usermod -o -g "$LDAP_OPENLDAP_GID" openldap
    fi
@@ -73,7 +76,8 @@ chown -R openldap:openldap /var/run/slapd
 if [ ! -e /etc/ldap/slapd.d/initialized ]; then
 
    function substr_before() {
-      echo "${1%%$2*}"
+      # shellcheck disable=SC2295  # Expansions inside ${..} need to be quoted separately, otherwise they match as patterns
+      echo "${1%%${2}*}"
    }
 
    function str_replace() {
@@ -86,8 +90,9 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
       local action=$1 && shift
       local file=${!#}
       log INFO "Loading [$file]..."
-      interpolate < $file > /tmp/$(basename $file)
-      ldap$action -H ldapi:/// "${@:1:${#}-1}" -f /tmp/$(basename $file)
+      # shellcheck disable=SC2094  # Make sure not to read and write the same file in the same pipeline
+      interpolate <"$file" >"/tmp/$(basename "$file")"
+      "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "/tmp/$(basename "$file")"
    }
 
    # interpolate variable placeholders in env vars starting with "LDAP_INIT_"
@@ -97,24 +102,30 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
 
    # pre-populate folders in case they are empty
    for folder in "/var/lib/ldap" "/etc/ldap/slapd.d"; do
-      if [ "$folder" -ef "${folder}_orig" ]; then
+      if [[ $folder -ef "${folder}_orig" ]]; then
          continue
       fi
-      if [ -z "$(ls $folder)" ]; then
+      if [[ -z $(ls $folder) ]]; then
          log INFO "Initializing [$folder]..."
          cp -r --preserve=all ${folder}_orig/. $folder
       fi
    done
 
-   if [ -z "${LDAP_INIT_ROOT_USER_PW:-}" ]; then
-     log ERROR "LDAP_INIT_ROOT_USER_PW variable is not set!"
-     exit 1
+   if [[ -z ${LDAP_INIT_ROOT_USER_DN:-} ]]; then
+      log ERROR "LDAP_INIT_ROOT_USER_DN variable is not set!"
+      exit 1
    fi
 
-   # LDAP_INIT_ROOT_USER_PW_HASHED is used in /opt/ldifs/init_mdb_acls.ldif
-   LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
+   if [[ -z ${LDAP_INIT_ROOT_USER_PW:-} ]]; then
+      log ERROR "LDAP_INIT_ROOT_USER_PW variable is not set!"
+      exit 1
+   fi
 
-   if [ "${LDAP_INIT_RFC2307BIS_SCHEMA:-}" == "1" ]; then
+   # shellcheck disable=SC2034  # LDAP_INIT_ROOT_USER_PW_HASHED appears unused
+   LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
+   # LDAP_INIT_ROOT_USER_PW_HASHED is referenced in /opt/ldifs/init_mdb_acls.ldif
+
+   if [[ ${LDAP_INIT_RFC2307BIS_SCHEMA:-} == 1 ]]; then
       log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
       log INFO "Exporting initial slapd config..."
@@ -124,14 +135,16 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
       find /etc/ldap/slapd.d/ -type f -delete
 
       log INFO "Create modified sldapd config file..."
-      # create ldif file where "{2}nis,cn=schema,cn=config" schema is replaced by "{2}rfc2307bis,cn=schema,cn=config"
-      # 1. add all schema entries before "dn: cn={2}nis,cn=schema,cn=config" from initial config to new config file
-      echo "${initial_sldapd_config%%dn: cn=\{2\}nis,cn=schema,cn=config*}" > /tmp/config.ldif
-      # 2. add "dn: cn={2}rfc2307bis,cn=schema,cn=config" entry
-      sed 's/rfc2307bis/{2}rfc2307bis/g' /opt/ldifs/schema_rfc2307bis02.ldif >> /tmp/config.ldif
-      echo >> /tmp/config.ldif # add empty new line
-      # 3. add entry "dn: cn={3}inetorgperson,cn=schema,cn=config" and following entries from initial config to new config file
-      echo "dn: cn={3}inetorgperson,cn=schema,cn=config${initial_sldapd_config#*dn: cn=\{3\}inetorgperson,cn=schema,cn=config}" >> /tmp/config.ldif
+      {
+         # create ldif file where "{2}nis,cn=schema,cn=config" schema is replaced by "{2}rfc2307bis,cn=schema,cn=config"
+         # 1. add all schema entries before "dn: cn={2}nis,cn=schema,cn=config" from initial config to new config file
+         echo "${initial_sldapd_config%%dn: cn=\{2\}nis,cn=schema,cn=config*}"
+         # 2. add "dn: cn={2}rfc2307bis,cn=schema,cn=config" entry
+         sed 's/rfc2307bis/{2}rfc2307bis/g' /opt/ldifs/schema_rfc2307bis02.ldif
+         echo # add empty new line
+         # 3. add entry "dn: cn={3}inetorgperson,cn=schema,cn=config" and following entries from initial config to new config file
+         echo "dn: cn={3}inetorgperson,cn=schema,cn=config${initial_sldapd_config#*dn: cn=\{3\}inetorgperson,cn=schema,cn=config}"
+      } >/tmp/config.ldif
 
       log INFO "Register modified slapd config with RFC2307bis schema..."
       slapadd -F /etc/ldap/slapd.d -n 0 -l /tmp/config.ldif
@@ -140,7 +153,7 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
 
    /etc/init.d/slapd start
    # await ldap server start
-   for i in {1..8}; do
+   for _ in {1..8}; do
       ldapwhoami -H ldapi:/// && break
       sleep 1
    done
@@ -156,28 +169,30 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    ldif add    -Y EXTERNAL /opt/ldifs/init_module_unique.ldif
    ldif add    -Y EXTERNAL /opt/ldifs/init_module_ppolicy.ldif
 
-   if [ "${LDAP_INIT_ALLOW_CONFIG_ACCESS:-false}" == "true" ]; then
+   if [[ ${LDAP_INIT_ALLOW_CONFIG_ACCESS:-false} == true ]]; then
       ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
    fi
 
    # calculate LDAP_INIT_ORG_COMPUTED_ATTRS variable, referenced in init_org_tree.ldif
-   if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]] && [[ "$LDAP_INIT_ORG_DN" =~ [oO]=([^,]*) ]]; then
+   if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]] && [[ ${LDAP_INIT_ORG_DN:-} =~ [oO]=([^,]*) ]]; then
       # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "O=..." is present
       # e.g. LDAP_INIT_ORG_DN="O=example.com"               -> "o: example.com"
       # e.g. LDAP_INIT_ORG_DN="O=Example,DC=example,DC=com" -> "o: Example"
       LDAP_INIT_ORG_ATTR_O=${BASH_REMATCH[1]}
    fi
-   if [[ "$LDAP_INIT_ORG_DN" =~ [dD][cC]=([^,]*) ]]; then
+   if [[ $LDAP_INIT_ORG_DN =~ [dD][cC]=([^,]*) ]]; then
       LDAP_INIT_ORG_ATTR_DC=${BASH_REMATCH[1]}
       # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "DC=..." is present
       if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
          # e.g. LDAP_INIT_ORG_DN="DC=example,DC=com" -> "o: example.com"
          LDAP_INIT_ORG_ATTR_O=$(echo "$LDAP_INIT_ORG_DN" | grep -ioP 'DC=\K[^,]+' | paste -sd '.')
       fi
+      # shellcheck disable=SC2034  # LDAP_INIT_ORG_COMPUTED_ATTRS appears unused
       LDAP_INIT_ORG_COMPUTED_ATTRS="objectClass: dcObject
 o: $LDAP_INIT_ORG_ATTR_O
 dc: $LDAP_INIT_ORG_ATTR_DC"
    elif [[ -n ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
+      # shellcheck disable=SC2034  # LDAP_INIT_ORG_COMPUTED_ATTRS appears unused
       LDAP_INIT_ORG_COMPUTED_ATTRS="o: $LDAP_INIT_ORG_ATTR_O"
    else
       log ERROR "Unable to derive required 'o' attribute of objectClass 'organization' from LDAP_INIT_ORG_DN='$LDAP_INIT_ORG_DN'"
@@ -190,26 +205,32 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
 
    log INFO "--------------------------------------------"
 
-   echo "1" > /etc/ldap/slapd.d/initialized
+   echo "1" >/etc/ldap/slapd.d/initialized
    rm -f /tmp/*.ldif
 
    log INFO "Creating periodic LDAP backup at [$LDAP_BACKUP_FILE]..."
-   slapcat -n 1 -l $LDAP_BACKUP_FILE || true
+   slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
 
    /etc/init.d/slapd stop
    sleep 3
 fi
 
-echo "$LDAP_PPOLICY_PQCHECKER_RULE" > /etc/ldap/pqchecker/pqparams.dat
+echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
 
 
 #################################################################
 # Configure background task for LDAP backup
 #################################################################
-if [ -n "${LDAP_BACKUP_TIME:-}" ]; then
+if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
+
+   if [[ -z ${LDAP_BACKUP_FILE:-} ]]; then
+      log ERROR "LDAP_BACKUP_FILE variable is not set!"
+      exit 1
+   fi
+
    log INFO "--------------------------------------------"
    log INFO "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
-   if [[ "$LDAP_BACKUP_TIME" != +([0-9][0-9]:[0-9][0-9]) ]]; then
+   if [[ $LDAP_BACKUP_TIME != +([0-9][0-9]:[0-9][0-9]) ]]; then
       log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
       exit 1
    fi
@@ -219,7 +240,7 @@ if [ -n "${LDAP_BACKUP_TIME:-}" ]; then
 
    function backup_ldap() {
       while true; do
-         while [ "$(date +%H:%M)" != "${LDAP_BACKUP_TIME}" ]; do
+         while [[ ${LDAP_BACKUP_TIME} != "$(date +%H:%M)" ]]; do
             sleep 10s
          done
          log INFO "Creating periodic LDAP backup at [$LDAP_BACKUP_FILE]..."
@@ -238,9 +259,15 @@ fi
 log INFO "--------------------------------------------"
 log INFO "Starting OpenLDAP: slapd..."
 
+# build an array of “-d <level>” for each level in LDAP_LOG_LEVELS
+log_opts=()
+for lvl in ${LDAP_LOG_LEVELS:-}; do
+   log_opts+=("-d" "$lvl")
+done
+
 exec /usr/sbin/slapd \
-   $(for logLevel in ${LDAP_LOG_LEVELS:-}; do echo -n "-d $logLevel "; done) \
-   -h "ldap:/// ldapi:///" \
+   "${log_opts[@]}" \
+   -h "ldap:/// ldapi:/// ${LDAP_LDAPS_ENABLE:+ldaps:///}" \
    -u openldap \
    -g openldap \
    -F /etc/ldap/slapd.d 2>&1 | log INFO

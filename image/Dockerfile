@@ -1,6 +1,5 @@
-#syntax=docker/dockerfile:1.4
-# see https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/syntax.md#user-content-syntax
-# see https://docs.docker.com/build/dockerfile/frontend/
+#syntax=docker/dockerfile:1
+# see https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/reference.md
 # see https://docs.docker.com/engine/reference/builder/#syntax
 #
 # SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
@@ -11,7 +10,7 @@
 # https://hub.docker.com/_/debian/tags?name=bookworm-slim
 ARG BASE_IMAGE=debian:bookworm-slim
 
-# see https://github.com/hadolint/hadolint/wiki/DL3006
+# https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 
