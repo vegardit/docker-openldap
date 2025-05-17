@@ -73,8 +73,24 @@ chown -R openldap:openldap /var/run/slapd
 #################################################################
 # Configure LDAP server on initial container launch
 #################################################################
+function ldif() {
+   log INFO "---------------------------------------"
+   local action=$1 && shift
+   local file=${!#}
+   log INFO "Executing [ldap$action $file]..."
+   # shellcheck disable=SC2094  # Make sure not to read and write the same file in the same pipeline
+   local tmpfile
+   tmpfile=$(mktemp --suffix=.ldif /tmp/ldif.XXXXXX)
+   interpolate <"$file" >"$tmpfile"
+   "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
+   rm -f "$tmpfile"
+}
+
 if [ ! -e /etc/ldap/slapd.d/initialized ]; then
 
+   log INFO "======================================="
+   log INFO "Applying initial configuration"
+   log INFO "======================================="
    function substr_before() {
       # shellcheck disable=SC2295  # Expansions inside ${..} need to be quoted separately, otherwise they match as patterns
       echo "${1%%${2}*}"
@@ -83,16 +99,6 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
    function str_replace() {
       IFS= read -r -d $'\0' str
       echo "${str/$1/$2}"
-   }
-
-   function ldif() {
-      log INFO "--------------------------------------------"
-      local action=$1 && shift
-      local file=${!#}
-      log INFO "Loading [$file]..."
-      # shellcheck disable=SC2094  # Make sure not to read and write the same file in the same pipeline
-      interpolate <"$file" >"/tmp/$(basename "$file")"
-      "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "/tmp/$(basename "$file")"
    }
 
    # interpolate variable placeholders in env vars starting with "LDAP_INIT_"
@@ -147,14 +153,16 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
       } >/tmp/config.ldif
 
       log INFO "Register modified slapd config with RFC2307bis schema..."
-      slapadd -F /etc/ldap/slapd.d -n 0 -l /tmp/config.ldif
+      slapadd -F /etc/ldap/slapd.d -n 0 -l /tmp/config.ldif | log INFO
       chown openldap:openldap -R /etc/ldap/slapd.d
    fi
 
-   /etc/init.d/slapd start
+   /etc/init.d/slapd start 2>&1 | log INFO
    # await ldap server start
    for _ in {1..8}; do
-      ldapwhoami -H ldapi:/// && break
+      if ldapwhoami -H ldapi:/// | log INFO; then
+         break
+      fi
       sleep 1
    done
 
@@ -203,20 +211,145 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
 
-   log INFO "--------------------------------------------"
+   log INFO "---------------------------------------"
 
    echo "1" >/etc/ldap/slapd.d/initialized
    rm -f /tmp/*.ldif
 
-   log INFO "Creating periodic LDAP backup at [$LDAP_BACKUP_FILE]..."
+   log INFO "Creating LDAP backup at [$LDAP_BACKUP_FILE]..."
    slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
 
-   /etc/init.d/slapd stop
+   /etc/init.d/slapd stop | log INFO
    sleep 3
 fi
 
 echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
 
+
+#################################################################
+# TLS configuration
+#################################################################
+
+case "${LDAP_TLS_ENABLED:-}" in
+   true|false) ;;
+   auto) [[ -f $LDAP_TLS_CERT_FILE && -f $LDAP_TLS_KEY_FILE ]] && LDAP_TLS_ENABLED=true || LDAP_TLS_ENABLED=false ;;
+   *) log ERROR "LDAP_TLS_ENABLED must be auto|true|false"; exit 1 ;;
+esac
+
+SLAPD_EXTRA_URLS=""
+
+if [[ $LDAP_TLS_ENABLED == true ]]; then
+   log INFO "======================================="
+   log INFO "Enabling TLS support..."
+   log INFO "======================================="
+
+   if ! [[ "$LDAP_TLS_SSF" =~ ^[0-9]+$ ]] || (( LDAP_TLS_SSF < 0 || LDAP_TLS_SSF > 256 )); then
+     log ERROR "LDAP_TLS_SSF must be an integer between 0 and 256 (got '$LDAP_TLS_SSF')"
+     exit 1
+   fi
+
+   case "${LDAP_LDAPS_ENABLED:-}" in
+      true|false) log INFO "LDAPS enabled (port 636): $LDAP_LDAPS_ENABLED";;
+      *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
+   esac
+
+   case "${LDAP_TLS_VERIFY_CLIENT:-}" in
+      never|allow|try|demand) log INFO "TLS_VERIFY_CLIENT: $LDAP_TLS_VERIFY_CLIENT";;
+      *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
+   esac
+
+
+   if [[ ! -f ${LDAP_TLS_KEY_FILE:-} ]]; then
+      log ERROR "TLS requested but LDAP_TLS_KEY_FILE [${LDAP_TLS_KEY_FILE:-}] not accessible"
+      exit 1
+   fi
+   if [[ ! -f ${LDAP_TLS_CERT_FILE:-} ]]; then
+      log ERROR "TLS requested but LDAP_TLS_CERT_FILE [${LDAP_TLS_CERT_FILE:-}] not accessible"
+      exit 1
+   fi
+
+   install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
+   install -o openldap -g openldap -m 0600 "$LDAP_TLS_KEY_FILE" /etc/ldap/certs/server.key
+   install -o openldap -g openldap -m 0644 "$LDAP_TLS_CERT_FILE" /etc/ldap/certs/server.crt
+
+   if [[ -f ${LDAP_TLS_CA_FILE:-} ]]; then
+      install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
+      install -o openldap -g openldap -m 0644 "$LDAP_TLS_CA_FILE" /etc/ldap/certs/ca.crt
+   fi
+
+   # configure TLS key material
+   cat >/tmp/tls.ldif <<EOF
+dn: cn=config
+changetype: modify
+replace: olcTLSCertificateFile
+olcTLSCertificateFile: /etc/ldap/certs/server.crt
+-
+replace: olcTLSCertificateKeyFile
+olcTLSCertificateKeyFile: /etc/ldap/certs/server.key
+EOF
+   if [[ -f /etc/ldap/certs/ca.crt ]]; then
+      cat >>/tmp/tls.ldif <<EOF
+-
+replace: olcTLSCACertificateFile
+olcTLSCACertificateFile: /etc/ldap/certs/ca.crt
+EOF
+   fi
+
+   # client-cert policy
+   cat >>/tmp/tls.ldif <<EOF
+-
+replace: olcTLSVerifyClient
+olcTLSVerifyClient: ${LDAP_TLS_VERIFY_CLIENT:-try}
+EOF
+
+   # Minimum Security Strength Factor enforcement
+   if [[ $LDAP_TLS_SSF == 0 ]]; then
+      cat >>/tmp/tls.ldif <<EOF
+-
+replace: olcSecurity
+olcSecurity: ssf=$LDAP_TLS_SSF
+EOF
+  fi
+
+   # ldaps:// listener
+   if [[ $LDAP_LDAPS_ENABLED == true ]]; then
+      SLAPD_EXTRA_URLS=" ldaps:///"
+   fi
+
+else
+   log INFO "======================================="
+   log INFO "Ensuring TLS support is disabled..."
+   log INFO "======================================="
+   cat >/tmp/tls.ldif <<EOF
+dn: cn=config
+changetype: modify
+delete: olcTLSCertificateFile
+-
+delete: olcTLSCertificateKeyFile
+-
+delete: olcTLSCACertificateFile
+-
+delete: olcTLSVerifyClient
+-
+delete: olcSecurity
+EOF
+
+fi
+
+# apply TLS configuration
+/etc/init.d/slapd start 2>&1 | log INFO
+# await ldap server start
+for _ in {1..8}; do
+   if ldapwhoami -H ldapi:/// | log INFO; then
+      break
+   fi
+   sleep 1
+done
+ldif modify -Y EXTERNAL /tmp/tls.ldif
+rm -f /tmp/tls.ldif
+
+/etc/init.d/slapd stop | log INFO
+sleep 3
 
 #################################################################
 # Configure background task for LDAP backup
@@ -228,8 +361,9 @@ if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
       exit 1
    fi
 
-   log INFO "--------------------------------------------"
+   log INFO "======================================="
    log INFO "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
+   log INFO "======================================="
    if [[ ! $LDAP_BACKUP_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
       log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
       exit 1
@@ -256,8 +390,9 @@ fi
 #################################################################
 # Start LDAP service
 #################################################################
-log INFO "--------------------------------------------"
-log INFO "Starting OpenLDAP: slapd..."
+log INFO "***************************************"
+log INFO "* Starting OpenLDAP: slapd..."
+log INFO "***************************************"
 
 # build an array of “-d <level>” for each level in LDAP_LOG_LEVELS
 log_opts=()
@@ -267,7 +402,7 @@ done
 
 exec /usr/sbin/slapd \
    "${log_opts[@]}" \
-   -h "ldap:/// ldapi:/// ${LDAP_LDAPS_ENABLE:+ldaps:///}" \
+   -h "ldap:/// ldapi:///$SLAPD_EXTRA_URLS" \
    -u openldap \
    -g openldap \
    -F /etc/ldap/slapd.d 2>&1 | log INFO

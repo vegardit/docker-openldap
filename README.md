@@ -11,6 +11,7 @@
    1. [Initial configuration](#initial-config)
    1. [Initial LDAP tree](#initial_ldaptree)
    1. [Customizing the Password Policy](#ppolicy)
+   1. [Transport Encryption (LDAPS/STARTTLS)](#transport_encryption)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
    1. [Periodic LDAP Backup](#backup)
    1. [Synchronizing timezone/time with docker host](#timesync)
@@ -25,8 +26,6 @@
 Opinionated docker image currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
 It is automatically built **weekly** to include the latest OS security fixes.
-
-To keep the image light and simple, it does not configure TLS. Instead we recommend configuring a [Traefik 2.x](https://traefik.io) [TCP service](https://docs.traefik.io/routing/services/#configuring-tcp-services) with e.g. an auto-renewing [Let's Encrypt configuration](https://docs.traefik.io/https/acme/) in front of the OpenLDAP service.
 
 
 ## <a name="config"></a>Configuration
@@ -62,6 +61,7 @@ Environment variables can for example be set in one of the following ways:
      -e LDAP_INIT_PPOLICY_PW_MIN_LENGTH='12' \
      -v /my_data/ldap/var/:/var/lib/ldap/ \
      -v /my_data/ldap/etc/:/etc/ldap/slapd.d/ \
+     -p 389:389 \
      vegardit/openldap
    ```
 
@@ -134,6 +134,131 @@ A custom rule can be provided via an environment variable, e.g.:
 ```sh
 LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 ```
+
+### <a name="transport_encryption"></a>Transport Encryption (LDAPS/STARTTLS)
+
+LDAP traffic can be encrypted in **two** complementary ways:
+
+1. **Terminate TLS inside the container** using *static* X.509 certificates:
+
+    * Bind-mount your TLS key material to the container to enable STARTTLS on port 389
+    * Optionally enable **LDAPS** as well (TLS-wrapped LDAP port 636)
+
+    |Variable                |Default                       |Description
+    |------------------------|------------------------------|-----------
+    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if both certificate and private key are present at `/etc/ldap/certs/server.{crt,key}` (or supplied via `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
+    |`LDAP_LDAPS_ENABLED`    |`true`                        |*(Only applies if TLS is enabled)*<br>`true` - enable implicit TLS (LDAPS) listener on port 636 (`ldaps://`)
+    |`LDAP_TLS_CERT_FILE`    |`/run/secrets/ldap/server.crt`|Path to the server certificate **inside** the container
+    |`LDAP_TLS_KEY_FILE`     |`/run/secrets/ldap/server.key`|Path to the matching private key **inside** the container
+    |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates
+    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin25/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7B)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
+    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin25/guide.html#Security%20Strength%20Factors)
+
+    *How to generate a self-signed cert for testing:*
+
+    ```bash
+    openssl req -x509 -nodes -newkey rsa:4096 \
+      -keyout server.key -out server.crt \
+      -days 365 -sha256 \
+      -subj "/CN=ldap.example.com" \
+      -addext "subjectAltName=DNS:ldap.example.com"
+    ```
+
+    **Docker Compose example with bind-mount at default location:**
+
+    Mounting the key and certificate to the default location will automatically enable STARTTLS and LDAPS support.
+
+    ```yaml
+    services:
+      openldap:
+        image: vegardit/openldap:latest
+        environment:
+          # ... other options
+        ports:
+          - "389:389"  # for STARTTLS
+          - "636:636"  # for LDAPS
+        volumes:
+          - ./certs/server.crt:/run/secrets/ldap/server.crt:ro
+          - ./certs/server.key:/run/secrets/ldap/server.key:ro
+          - ./certs/ca.crt:/run/secrets/ldap/ca.crt:ro  # optional, if using a private CA
+    ```
+
+    **Docker Compose example with bind-mount at custom location:**
+
+    Pointing LDAP_TLS_KEY_FILE and LDAP_TLS_CRT_FILE to paths accessible from within the container will automatically enable STARTTLS and LDAPS support.
+
+    ```yaml
+    services:
+      openldap:
+        image: vegardit/openldap:latest
+        environment:
+          LDAP_TLS_KEY_FILE: /opt/tls/server.key
+          LDAP_TLS_CERT_FILE: /opt/tls/server.crt
+          # ... other options
+        ports:
+          - "389:389"  # for STARTTLS
+          - "636:636"  # for LDAPS
+        volumes:
+          - ./certs/:/opt/tls/:ro
+    ```
+
+1. **Terminate TLS in front of the container with a reverse proxy**
+
+    Run the container plain on **389** and put a reverse proxy like [Traefik 2.x](https://traefik.io) in front.
+    Configure a [Traefik 2.x TCP service](https://docs.traefik.io/routing/services/#configuring-tcp-services) with an
+    auto-renewing [Let's Encrypt configuration](https://docs.traefik.io/https/acme/) that forwards the encrypted stream to the container.
+
+    **Traefik 2.x example (TCP mode):**
+    ```yaml
+    services:
+      openldap:
+        image: vegardit/openldap:latest
+        ports:
+          - "389:389"
+        environment:
+          # ... other options
+      labels:
+        traefik.enable: "true"
+        traefik.tcp.routers.ldap.rule: HostSNI(`ldap.example.com`)
+        traefik.tcp.routers.ldap.entryPoints: ldaps636 # expose externally on port 636
+        traefik.tcp.routers.ldap.tls.certresolver=lets_encrypt
+        traefik.tcp.routers.ldap.service: ldap
+        traefik.tcp.services.ldap.loadbalancer.server.port=389
+
+    traefik:
+      image: traefik:latest # https://hub.docker.com/_/traefik?tab=tags
+      ports:
+        - 636:636  # ldaps
+      volumes:
+        - /etc/traefik/traefik.yml:/traefik.yml:ro
+        - /etc/traefik/keystore.json:/keystore.json # holds self-acquired letsencrypt certs
+      labels:
+        traefik.enable: true
+    ```
+
+    ```yaml
+    # https://docs.traefik.io/reference/static-configuration/file/
+    entryPoints:
+      # https://docs.traefik.io/routing/entrypoints/
+      ldaps636:
+        address: ":636"
+    certificatesResolvers:
+      # https://docs.traefik.io/https/acme/
+      lets_encrypt:
+        acme:
+          email: info@example.com
+          storage: /keystore.json
+          tlsChallenge: {}
+          #httpChallenge:
+          #  entryPoint: http80
+    providers:
+      docker:
+        # https://docs.traefik.io/providers/docker/
+        endpoint: "unix:///var/run/docker.sock"
+        exposedByDefault: false # ignore containers that don't have a traefik.enable=true label
+        watch: true
+    ```
+
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user
 

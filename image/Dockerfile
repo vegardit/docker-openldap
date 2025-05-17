@@ -120,7 +120,14 @@ ENV \
   LDAP_BACKUP_TIME='02:00' \
   LDAP_BACKUP_FILE='/var/lib/ldap/data.ldif' \
   LDAP_OPENLDAP_UID='' \
-  LDAP_OPENLDAP_GID=''
+  LDAP_OPENLDAP_GID='' \
+  LDAP_TLS_ENABLED='auto' \
+  LDAP_LDAPS_ENABLED='true' \
+  LDAP_TLS_SSF=128 \
+  LDAP_TLS_CERT_FILE='/run/secrets/ldap/server.crt' \
+  LDAP_TLS_KEY_FILE='/run/secrets/ldap/server.key' \
+  LDAP_TLS_CA_FILE='/run/secrets/ldap/ca.crt' \
+  LDAP_TLS_VERIFY_CLIENT='try'
 
 RUN <<EOF
 
@@ -142,7 +149,7 @@ COPY .shared/lib/bash-init.sh /opt/bash-init.sh
 
 VOLUME ["/etc/ldap/slapd.d", "/var/lib/ldap"]
 
-EXPOSE 389
+EXPOSE 389 636
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
