@@ -230,7 +230,7 @@ if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
 
    log INFO "--------------------------------------------"
    log INFO "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
-   if [[ $LDAP_BACKUP_TIME != +([0-9][0-9]:[0-9][0-9]) ]]; then
+   if [[ ! $LDAP_BACKUP_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
       log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
       exit 1
    fi
