@@ -23,10 +23,9 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-Opinionated docker image currently based on the [Debian](https://www.debian.org/) docker image [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) to run an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
+An opinionated, multi-architecture Docker image - currently based on [Debian](https://www.debian.org/)'s [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) - built for easy deployment of an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
-It is automatically built **weekly** to include the latest OS security fixes.
-
+Automatically rebuilt **weekly** to include the latest OS security fixes.
 
 ## <a name="config"></a>Configuration
 

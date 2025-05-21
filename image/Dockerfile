@@ -10,9 +10,92 @@
 # https://hub.docker.com/_/debian/tags?name=bookworm-slim
 ARG BASE_IMAGE=debian:bookworm-slim
 
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LC_ALL=C
+
 # https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS pqchecker-build
+
+# https://github.com/hadolint/hadolint/wiki/DL3008 Pin versions
+# hadolint ignore=DL3008
+RUN <<EOF
+   set -eux
+   apt-get update
+   apt-get install --no-install-recommends -y \
+      build-essential \
+      ca-certificates \
+      git
+
+EOF
+
+RUN <<EOF
+   git config --global advice.detachedHead false
+   git config --global core.sparseCheckout true
+   git config --global init.defaultBranch main
+EOF
+
+WORKDIR /opt/openldap-src
+RUN <<EOF
+   git clone --depth 1 --branch OPENLDAP_REL_ENG_2_5 https://github.com/openldap/openldap.git .
+   ./configure
+   make depend
+EOF
+
+WORKDIR /opt/jni-headers
+
+ENV JVM_DIR=/usr/lib/jvm/openjdk11
+
+RUN <<EOF
+   set -eux
+
+   git clone --depth 1 --filter=blob:none --no-checkout --branch jdk-11-ga https://github.com/openjdk/jdk.git .
+   git sparse-checkout init --cone
+   git sparse-checkout set \
+        src/java.base/share/native/include/jni.h \
+        src/java.base/unix/native/include/jni_md.h
+   git checkout
+
+   mkdir -p "$JVM_DIR/include/linux"
+   cp src/java.base/share/native/include/jni.h   "$JVM_DIR/include/"
+   cp src/java.base/unix/native/include/jni_md.h "$JVM_DIR/include/linux/"
+EOF
+
+WORKDIR /opt/pqchecker
+
+RUN <<EOF
+   set -eu
+
+   # auto-detect JAVA_HOME from wherever jni.h landed
+   JNI_HDR=$(find /usr/lib/jvm -path '*/include/jni.h' -print -quit)
+   if [ -z "$JNI_HDR" ]; then
+      echo "ERROR: jni.h not found under /usr/lib/jvm – cannot set JAVA_HOME" >&2
+      exit 1
+   fi
+   JAVA_HOME=$(dirname "$(dirname "$JNI_HDR")")
+   echo "Detected JAVA_HOME=$JAVA_HOME"
+   export JAVA_HOME
+
+   set -x
+   git init .
+   # git remote add origin https://bitbucket.org/ameddeb/pqchecker.git
+   git remote add origin https://github.com/pqchecker/pqchecker.git
+   git fetch --depth 1 origin 2813c1922c4233d72066201d11b6b4ad4f61239d
+   git checkout FETCH_HEAD
+
+   bash ./adjustdate.bash
+   ./configure \
+      LDAPSRC=/opt/openldap-src \
+      JAVAHOME="$JAVA_HOME" \
+      libdir=/usr/lib/ldap \
+      PARAMDIR=/etc/ldap/pqchecker
+   make
+
+EOF
+
+# https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE} as final
 
 LABEL maintainer="Vegard IT GmbH (vegardit.com)"
 
@@ -22,16 +105,12 @@ USER root
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-ARG DEBIAN_FRONTEND=noninteractive
-ARG LC_ALL=C
-
 ARG INSTALL_SUPPORT_TOOLS=0
 
 ARG BASE_LAYER_CACHE_KEY
 
-#ARG PQCHECKER_URL=https://meddeb.net/pub/pqchecker/deb/8/pqchecker_2.0.0_amd64.deb
-ARG PQCHECKER_URL=https://github.com/pqchecker/pqchecker-binaries/raw/main/deb/8/pqchecker_2.0.0_amd64.deb
-ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
+COPY --from=pqchecker-build /opt/pqchecker/src/.libs/pqchecker.so /usr/lib/ldap/pqchecker.so
+COPY --from=pqchecker-build /opt/pqchecker/pqparams.dat           /etc/ldap/pqchecker/pqparams.dat
 
 # see https://github.com/hadolint/hadolint/wiki/DL3008
 # hadolint ignore=DL3008,SC2016
@@ -58,17 +137,6 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd
-
-  echo "#################################################"
-  echo "Installing pqChecker password quality checker module..."
-  echo "#################################################"
-  # https://www.meddeb.net/pqchecker/
-  apt-get install --no-install-recommends -y curl
-  curl -k -o /tmp/pqchecker.deb -SL "${PQCHECKER_URL}"
-  echo "${PQCHECKER_MD5} /tmp/pqchecker.deb" | md5sum -c -
-  dpkg -i /tmp/pqchecker.deb
-  rm /tmp/pqchecker.deb
-  apt-get remove --auto-remove -y curl
 
   echo "#################################################"
   echo "Moving config and data directories..."
