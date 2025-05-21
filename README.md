@@ -23,7 +23,8 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-An opinionated, multi-architecture Docker image - currently based on [Debian](https://www.debian.org/)'s [`debian:bookworm-slim`](https://hub.docker.com/_/debian?tab=tags&name=bookworm-slim) - built for easy deployment of an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
+An opinionated, multi-arch Docker image - currently based on [Debian](https://www.debian.org/)'s [`debian:bookworm-slim`](https://hub.docker.com/_/debian/tags?name=bookworm-slim) -
+built for easy deployment of an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
 
 Automatically rebuilt **weekly** to include the latest OS security fixes.
 
