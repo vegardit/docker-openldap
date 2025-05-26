@@ -10,36 +10,39 @@
 # https://hub.docker.com/_/debian/tags?name=bookworm-slim
 ARG BASE_IMAGE=debian:bookworm-slim
 
-ARG DEBIAN_FRONTEND=noninteractive
-ARG LC_ALL=C
+#############################################################
+# build pqchecker
+#############################################################
 
 # https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE} AS pqchecker-build
 
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LC_ALL=C
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
 # https://github.com/hadolint/hadolint/wiki/DL3008 Pin versions
 # hadolint ignore=DL3008
 RUN <<EOF
-   set -eux
-   apt-get update
-   apt-get install --no-install-recommends -y \
-      build-essential \
-      ca-certificates \
-      git
+  set -x
+  apt-get update
+  apt-get install --no-install-recommends -y \
+    build-essential \
+    ca-certificates \
+    git
 
-EOF
-
-RUN <<EOF
-   git config --global advice.detachedHead false
-   git config --global core.sparseCheckout true
-   git config --global init.defaultBranch main
+  git config --global advice.detachedHead false
+  git config --global core.sparseCheckout true
+  git config --global init.defaultBranch main
 EOF
 
 WORKDIR /opt/openldap-src
 RUN <<EOF
-   git clone --depth 1 --branch OPENLDAP_REL_ENG_2_5 https://github.com/openldap/openldap.git .
-   ./configure
-   make depend
+  git clone --depth 1 --branch OPENLDAP_REL_ENG_2_5 https://github.com/openldap/openldap.git .
+  ./configure
+  make depend
 EOF
 
 WORKDIR /opt/jni-headers
@@ -47,81 +50,77 @@ WORKDIR /opt/jni-headers
 ENV JVM_DIR=/usr/lib/jvm/openjdk11
 
 RUN <<EOF
-   set -eux
+  set -x
 
-   git clone --depth 1 --filter=blob:none --no-checkout --branch jdk-11-ga https://github.com/openjdk/jdk.git .
-   git sparse-checkout init --cone
-   git sparse-checkout set \
-        src/java.base/share/native/include/jni.h \
-        src/java.base/unix/native/include/jni_md.h
-   git checkout
+  git clone --depth 1 --filter=blob:none --no-checkout --branch jdk-11-ga https://github.com/openjdk/jdk.git .
+  git sparse-checkout init --cone
+  git sparse-checkout set \
+      src/java.base/share/native/include/jni.h \
+      src/java.base/unix/native/include/jni_md.h
+  git checkout
 
-   mkdir -p "$JVM_DIR/include/linux"
-   cp src/java.base/share/native/include/jni.h   "$JVM_DIR/include/"
-   cp src/java.base/unix/native/include/jni_md.h "$JVM_DIR/include/linux/"
+  mkdir -p "$JVM_DIR/include/linux"
+  cp src/java.base/share/native/include/jni.h   "$JVM_DIR/include/"
+  cp src/java.base/unix/native/include/jni_md.h "$JVM_DIR/include/linux/"
 EOF
 
 WORKDIR /opt/pqchecker
 
 RUN <<EOF
-   set -eu
+  set -eu
 
-   # auto-detect JAVA_HOME from wherever jni.h landed
-   JNI_HDR=$(find /usr/lib/jvm -path '*/include/jni.h' -print -quit)
-   if [ -z "$JNI_HDR" ]; then
-      echo "ERROR: jni.h not found under /usr/lib/jvm – cannot set JAVA_HOME" >&2
-      exit 1
-   fi
-   JAVA_HOME=$(dirname "$(dirname "$JNI_HDR")")
-   echo "Detected JAVA_HOME=$JAVA_HOME"
-   export JAVA_HOME
+  # auto-detect JAVA_HOME from wherever jni.h landed
+  JNI_HDR=$(find /usr/lib/jvm -path '*/include/jni.h' -print -quit)
+  if [[ -z $JNI_HDR ]]; then
+    echo "ERROR: jni.h not found under /usr/lib/jvm – cannot set JAVA_HOME" >&2
+    exit 1
+  fi
+  JAVA_HOME=$(dirname "$(dirname "$JNI_HDR")")
+  echo "Detected JAVA_HOME=$JAVA_HOME"
+  export JAVA_HOME
 
-   set -x
-   git init .
-   # git remote add origin https://bitbucket.org/ameddeb/pqchecker.git
-   git remote add origin https://github.com/pqchecker/pqchecker.git
-   git fetch --depth 1 origin 2813c1922c4233d72066201d11b6b4ad4f61239d
-   git checkout FETCH_HEAD
+  set -x
+  git init .
+  # git remote add origin https://bitbucket.org/ameddeb/pqchecker.git
+  git remote add origin https://github.com/pqchecker/pqchecker.git
+  git fetch --depth 1 origin 2813c1922c4233d72066201d11b6b4ad4f61239d
+  git checkout FETCH_HEAD
 
-   bash ./adjustdate.bash
-   ./configure \
+  bash ./adjustdate.bash
+  ./configure \
       LDAPSRC=/opt/openldap-src \
       JAVAHOME="$JAVA_HOME" \
       libdir=/usr/lib/ldap \
       PARAMDIR=/etc/ldap/pqchecker
-   make
+  make
 
 EOF
+
+
+#############################################################
+# build final image
+#############################################################
 
 # https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE} as final
 
-LABEL maintainer="Vegard IT GmbH (vegardit.com)"
-
-# see https://github.com/hadolint/hadolint/wiki/DL3002
-# hadolint ignore=DL3002
-USER root
+ARG DEBIAN_FRONTEND=noninteractive
+ARG LC_ALL=C
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ARG INSTALL_SUPPORT_TOOLS=0
-
 ARG BASE_LAYER_CACHE_KEY
 
 COPY --from=pqchecker-build /opt/pqchecker/src/.libs/pqchecker.so /usr/lib/ldap/pqchecker.so
 COPY --from=pqchecker-build /opt/pqchecker/pqparams.dat           /etc/ldap/pqchecker/pqparams.dat
 
-# see https://github.com/hadolint/hadolint/wiki/DL3008
+# https://github.com/hadolint/hadolint/wiki/DL3008 Pin versions
 # hadolint ignore=DL3008,SC2016
 RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
-
   /mnt/shared/cmd/debian-install-os-updates.sh
   /mnt/shared/cmd/debian-install-support-tools.sh
-
-  function curl() {
-    command curl -sSfL --connect-timeout 10 --max-time 30 --retry 3 --retry-all-errors "$@"
-  }
 
   echo "#################################################"
   echo "Installing tini..."
@@ -150,17 +149,27 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
 
 EOF
 
-ARG BUILD_DATE
-ARG GIT_BRANCH
-ARG GIT_COMMIT_HASH
-ARG GIT_COMMIT_DATE
-ARG GIT_REPO_URL
+ARG OCI_authors
+ARG OCI_title
+ARG OCI_description
+ARG OCI_source
+ARG OCI_revision
+ARG OCI_version
+ARG OCI_created
 
+ARG GIT_BRANCH
+ARG GIT_COMMIT_DATE
+
+# https://github.com/opencontainers/image-spec/blob/main/annotations.md
 LABEL \
-  org.label-schema.schema-version="1.0" \
-  org.label-schema.build-date=$BUILD_DATE \
-  org.label-schema.vcs-ref=$GIT_COMMIT_HASH \
-  org.label-schema.vcs-url=$GIT_REPO_URL
+  org.opencontainers.image.title="$OCI_title" \
+  org.opencontainers.image.description="$OCI_description" \
+  org.opencontainers.image.source="$OCI_source" \
+  org.opencontainers.image.revision="$OCI_revision" \
+  org.opencontainers.image.version="$OCI_version" \
+  org.opencontainers.image.created="$OCI_created"
+
+LABEL maintainer="$OCI_authors"
 
 # Default configuration: can be overridden at the docker command line
 # see https://github.com/hadolint/hadolint/wiki/DL3044
@@ -198,15 +207,15 @@ ENV \
   LDAP_TLS_VERIFY_CLIENT='try'
 
 RUN <<EOF
-
   echo "#################################################"
   echo "Writing build_info..."
   echo "#################################################"
-  echo "
-GIT_REPO:    $GIT_REPO_URL
+  cat <<EOT >/opt/build_info
+GIT_REPO:    $OCI_source
 GIT_BRANCH:  $GIT_BRANCH
-GIT_COMMIT:  $GIT_COMMIT_HASH @ $GIT_COMMIT_DATE
-IMAGE_BUILD: $BUILD_DATE" >/opt/build_info
+GIT_COMMIT:  $OCI_revision @ $GIT_COMMIT_DATE
+IMAGE_BUILD: $OCI_created
+EOT
   cat /opt/build_info
 
 EOF
