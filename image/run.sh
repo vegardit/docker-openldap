@@ -344,7 +344,12 @@ for _ in {1..8}; do
   fi
   sleep 1
 done
-ldif modify -Y EXTERNAL /tmp/tls.ldif
+if [[ ${LDAP_TLS_ENABLED} == true ]]; then
+  ldif modify -Y EXTERNAL /tmp/tls.ldif
+else
+  ldif modify -c -Y EXTERNAL /tmp/tls.ldif || true  # ignore "ldap_modify: No such attribute (16)"
+fi
+
 rm -f /tmp/tls.ldif
 
 /etc/init.d/slapd stop | log INFO
