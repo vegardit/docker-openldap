@@ -37,4 +37,3 @@ pwdMaxAge: 0
 # Password Quality
 pwdMinLength: ${LDAP_INIT_PPOLICY_PW_MIN_LENGTH:-8}
 pwdCheckQuality: 2
-pwdCheckModule: /usr/lib/ldap/pqchecker.so

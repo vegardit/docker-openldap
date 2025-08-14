@@ -15,14 +15,14 @@ source "$shared_lib/lib/build-image-init.sh"
 # declare image meta
 #################################################
 image_repo=${DOCKER_IMAGE_REPO:-vegardit/openldap}
-base_image=${DOCKER_BASE_IMAGE:-debian:bookworm-slim}
+base_image=${DOCKER_BASE_IMAGE:-debian:trixie-slim}
 
 platforms="linux/amd64,linux/arm64/v8,linux/arm/v7"
 
 declare -A image_meta=(
   [authors]="Vegard IT GmbH (vegardit.com)"
   [title]="$image_repo"
-  [description]="Opinionated docker image built for easy deployment of an OpenLDAP 2.5 server"
+  [description]="Opinionated docker image built for easy deployment of an OpenLDAP 2.6 server"
   [source]="$(git config --get remote.origin.url)"
   [revision]="$(git rev-parse --short HEAD)"
   [version]="$(git rev-parse --short HEAD)"
@@ -155,8 +155,8 @@ echo "ldap_version=$ldap_version"
 #################################################
 # extend tags
 #################################################
-tags+=("${ldap_version}")       # :2.5.12
-tags+=("${ldap_version%.*}.x")  # :2.5.x
+tags+=("${ldap_version}")       # :2.6.10
+tags+=("${ldap_version%.*}.x")  # :2.6.x
 tags+=("${ldap_version%%.*}.x") # :2.x
 
 

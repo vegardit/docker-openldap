@@ -23,8 +23,8 @@
 
 ## <a name="what-is-it"></a>What is it?
 
-An opinionated, multi-arch Docker image - currently based on [Debian](https://www.debian.org/)'s [`debian:bookworm-slim`](https://hub.docker.com/_/debian/tags?name=bookworm-slim) -
-built for easy deployment of an [OpenLDAP 2.5](https://www.openldap.org/doc/admin25/) server.
+An opinionated, multi-arch Docker image - currently based on [Debian](https://www.debian.org/)'s [`debian:trixie-slim`](https://hub.docker.com/_/debian/tags?name=trixie-slim) -
+built for easy deployment of an [OpenLDAP 2.6](https://www.openldap.org/doc/admin26/) server.
 
 Automatically rebuilt **weekly** to include the latest OS security fixes.
 
@@ -151,8 +151,8 @@ LDAP traffic can be encrypted in **two** complementary ways:
     |`LDAP_TLS_CERT_FILE`    |`/run/secrets/ldap/server.crt`|Path to the server certificate **inside** the container
     |`LDAP_TLS_KEY_FILE`     |`/run/secrets/ldap/server.key`|Path to the matching private key **inside** the container
     |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates
-    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin25/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7B)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
-    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin25/guide.html#Security%20Strength%20Factors)
+    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7B)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
+    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
 
     *How to generate a self-signed cert for testing:*
 
@@ -348,7 +348,7 @@ None    (32768)  only messages that get logged whatever log level is set
 
 ## <a name="references"></a>References
 
-- OpenLDAP Software 2.5 Administrator's Guide https://www.openldap.org/doc/admin25/guide.html
+- OpenLDAP Software 2.6 Administrator's Guide https://www.openldap.org/doc/admin26/guide.html
 - OpenLDAP Online Configuration Reference https://tylersguides.com/guides/openldap-online-configuration-reference/
 - `slapd-config(5)` - Linux man page https://linux.die.net/man/5/slapd-config
 

@@ -16,3 +16,4 @@ olcPPolicyHashCleartext: TRUE
 # return AccountLocked instead of InvalidCredentials error:
 olcPPolicyUseLockout: TRUE
 olcPPolicyForwardUpdates: FALSE
+olcPPolicyCheckModule: /usr/lib/ldap/pqchecker.so

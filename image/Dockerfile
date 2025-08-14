@@ -7,8 +7,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
-# https://hub.docker.com/_/debian/tags?name=bookworm-slim
-ARG BASE_IMAGE=debian:bookworm-slim
+# https://hub.docker.com/_/debian/tags?name=trixie-slim
+ARG BASE_IMAGE=debian:trixie-slim
 
 #############################################################
 # build pqchecker
@@ -40,7 +40,7 @@ EOF
 
 WORKDIR /opt/openldap-src
 RUN <<EOF
-  git clone --depth 1 --branch OPENLDAP_REL_ENG_2_5 https://github.com/openldap/openldap.git .
+  git clone --depth 1 --branch OPENLDAP_REL_ENG_2_6 https://github.com/openldap/openldap.git .
   ./configure
   make depend
 EOF

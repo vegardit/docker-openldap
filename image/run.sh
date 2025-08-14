@@ -66,12 +66,56 @@ if [[ -n ${LDAP_OPENLDAP_GID:-} ]]; then
 fi
 chown -R openldap:openldap /etc/ldap
 chown -R openldap:openldap /var/lib/ldap
-chown -R openldap:openldap /var/lib/ldap_orig
-chown -R openldap:openldap /var/run/slapd
+chown -R openldap:openldap /var/lib/ldap_orig || true
+mkdir -p /run/slapd
+chown -R openldap:openldap /run/slapd
+
+#################################################################
+# Install TLS certificates if needed (must be before any slapd starts)
+#################################################################
+case "${LDAP_TLS_ENABLED:-}" in
+  true|false) ;;
+  auto) [[ -f $LDAP_TLS_CERT_FILE && -f $LDAP_TLS_KEY_FILE ]] && LDAP_TLS_ENABLED=true || LDAP_TLS_ENABLED=false ;;
+  *) log ERROR "LDAP_TLS_ENABLED must be auto|true|false"; exit 1 ;;
+esac
+
+if [[ $LDAP_TLS_ENABLED == true ]]; then
+  if ! [[ "$LDAP_TLS_SSF" =~ ^[0-9]+$ ]] || (( LDAP_TLS_SSF < 0 || LDAP_TLS_SSF > 256 )); then
+    log ERROR "LDAP_TLS_SSF must be an integer between 0 and 256 (got '$LDAP_TLS_SSF')"
+    exit 1
+  fi
+
+  case "${LDAP_LDAPS_ENABLED:-}" in
+    true|false) log INFO "LDAPS enabled (port 636): $LDAP_LDAPS_ENABLED";;
+    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
+  esac
+
+  case "${LDAP_TLS_VERIFY_CLIENT:-}" in
+    never|allow|try|demand) log INFO "TLS_VERIFY_CLIENT: $LDAP_TLS_VERIFY_CLIENT";;
+    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
+  esac
+
+  if [[ ! -f ${LDAP_TLS_KEY_FILE:-} ]]; then
+    log ERROR "TLS requested but LDAP_TLS_KEY_FILE [${LDAP_TLS_KEY_FILE:-}] not accessible"
+    exit 1
+  fi
+  if [[ ! -f ${LDAP_TLS_CERT_FILE:-} ]]; then
+    log ERROR "TLS requested but LDAP_TLS_CERT_FILE [${LDAP_TLS_CERT_FILE:-}] not accessible"
+    exit 1
+  fi
+
+  log INFO "Installing TLS certificates..."
+  install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
+  install -o openldap -g openldap -m 0600 "$LDAP_TLS_KEY_FILE" /etc/ldap/certs/server.key
+  install -o openldap -g openldap -m 0644 "$LDAP_TLS_CERT_FILE" /etc/ldap/certs/server.crt
+  if [[ -f ${LDAP_TLS_CA_FILE:-} ]]; then
+    install -o openldap -g openldap -m 0644 "$LDAP_TLS_CA_FILE" /etc/ldap/certs/ca.crt
+  fi
+fi
 
 
 #################################################################
-# Configure LDAP server on initial container launch
+# Configure LDAP server on initial container launch or after version upgrade
 #################################################################
 function ldif() {
   log INFO "---------------------------------------"
@@ -86,10 +130,109 @@ function ldif() {
   rm -f "$tmpfile"
 }
 
-if [ ! -e /etc/ldap/slapd.d/initialized ]; then
-  log INFO "======================================="
-  log INFO "Applying initial configuration"
-  log INFO "======================================="
+function slapd() {
+  local cmd="${1:-}"
+  local -r RUNDIR="/run/slapd"
+  local -r LOGFILE="${SLAPD_LOG_FILE:-/tmp/slapd.log}"
+  local -r PIDFILE="${SLAPD_INIT_PIDFILE:-$RUNDIR/.init.pid}"
+  local -r URLS="ldap:/// ldapi:///${SLAPD_EXTRA_URLS:-}"
+  local -a dbg_opts=()
+
+  # Debug levels for init runs (independent from final exec)
+  # e.g. export SLAPD_INIT_LOG_LEVELS="stats config sync"
+  for lvl in ${SLAPD_INIT_LOG_LEVELS:-stats config}; do
+    dbg_opts+=(-d "$lvl")
+  done
+
+  case "$cmd" in
+    start)
+      log INFO "Starting slapd for init/migration..."
+      mkdir -p "$RUNDIR"
+      chown openldap:openldap "$RUNDIR"
+      chmod 770 "$RUNDIR"
+
+      # truncate previous log
+      : > "$LOGFILE"
+
+      # Run in foreground (because of -d ...) and capture logs; background with &
+      /usr/sbin/slapd \
+        "${dbg_opts[@]}" \
+        -h "$URLS" \
+        -u openldap \
+        -g openldap \
+        -F /etc/ldap/slapd.d \
+        > "$LOGFILE" 2>&1 &
+      local pid=$!
+      echo "$pid" > "$PIDFILE"
+
+      # Wait up to 10s for readiness via ldapi:///
+      for _ in {1..20}; do
+        if ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+          log INFO "slapd started (pid $pid)"
+          return 0
+        fi
+        sleep 0.5
+      done
+
+      log ERROR "Timeout waiting for slapd to become ready"
+      # Show immediate diagnostics
+      tail -n 80 "$LOGFILE" | log ERROR
+      return 1
+      ;;
+
+    stop)
+      log INFO "Stopping slapd..."
+      local pid=""
+      if [[ -r "$PIDFILE" ]]; then
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+      fi
+
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+      else
+        # Fallback: scan /proc for a foreground slapd we started
+        for p in /proc/[0-9]*; do
+          if [[ -r "$p/comm" ]] && [[ "$(cat "$p/comm")" == "slapd" ]]; then
+            pid="${p##*/}"
+            kill "$pid" 2>/dev/null || true
+          fi
+        done
+      fi
+
+      # Wait up to 10s for it to exit (ldapi should drop when slapd is gone)
+      for _ in {1..20}; do
+        if ! ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+          log INFO "slapd stopped"
+          rm -f "$PIDFILE"
+          return 0
+        fi
+        sleep 0.5
+      done
+
+      log WARN "Graceful stop timed out — dumping last log lines before forcing kill:"
+      tail -n 120 "$LOGFILE" | log WARN
+
+      # Force kill any remaining slapd processes
+      for p in /proc/[0-9]*; do
+        if [[ -r "$p/comm" ]] && [[ "$(cat "$p/comm")" == "slapd" ]]; then
+          kill -9 "${p##*/}" 2>/dev/null || true
+        fi
+      done
+      rm -f "$PIDFILE"
+      log INFO "slapd forced to stop"
+      ;;
+
+    *)
+      log ERROR "Usage: slapd {start|stop}"
+      return 2
+      ;;
+  esac
+}
+
+initialized_file=/etc/ldap/slapd.d/initialized
+config_version="2.6"
+if [ ! -e "$initialized_file" ]; then
+  log BOX "Applying initial configuration..."
   function substr_before() {
     # shellcheck disable=SC2295  # Expansions inside ${..} need to be quoted separately, otherwise they match as patterns
     echo "${1%%${2}*}"
@@ -156,14 +299,7 @@ if [ ! -e /etc/ldap/slapd.d/initialized ]; then
     chown openldap:openldap -R /etc/ldap/slapd.d
   fi
 
-  /etc/init.d/slapd start 2>&1 | log INFO
-  # await ldap server start
-  for _ in {1..8}; do
-    if ldapwhoami -H ldapi:/// | log INFO; then
-      break
-    fi
-    sleep 1
-  done
+  slapd start
 
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
@@ -212,14 +348,85 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
 
   log INFO "---------------------------------------"
 
-  echo "1" >/etc/ldap/slapd.d/initialized
+  echo "$config_version" >"$initialized_file"
   rm -f /tmp/*.ldif
 
   log INFO "Creating LDAP backup at [$LDAP_BACKUP_FILE]..."
   slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
 
-  /etc/init.d/slapd stop | log INFO
-  sleep 3
+  slapd stop
+
+else
+  # System is already initialized - check for migrations
+  last_version=$(cat "$initialized_file")
+
+  # Handle legacy format (just "1" means pre-versioning, treat as 2.5)
+  if [[ "$last_version" == "1" ]]; then
+    last_version="2.5"
+  fi
+
+  # Check if we need to migrate from 2.5 to 2.6
+  if [[ "$last_version" == "2.5" ]]; then
+    log BOX "Migrating config to OpenLDAP 2.6..."
+
+    slapd start
+
+    # Find the actual ppolicy overlay DN (it might have an index like {0}ppolicy)
+    ppolicy_dn=$(ldapsearch -H ldapi:/// -Y EXTERNAL -b "olcDatabase={1}mdb,cn=config" "(objectClass=olcPPolicyConfig)" dn 2>/dev/null | grep "^dn:" | head -1 | sed 's/^dn: //')
+
+    if [[ -z "$ppolicy_dn" ]]; then
+      log WARN "ppolicy overlay not found in configuration, skipping password policy migration"
+    else
+      log INFO "Found ppolicy overlay at: $ppolicy_dn"
+
+      # Check if ppolicy overlay already has the new configuration
+      if ldapsearch -H ldapi:/// -Y EXTERNAL -b "$ppolicy_dn" -s base "(objectClass=*)" olcPPolicyCheckModule 2>/dev/null | grep -q "olcPPolicyCheckModule"; then
+        log INFO "Password policy overlay already configured for 2.6, skipping migration"
+      else
+        # Check for legacy pwdCheckModule entries
+        has_legacy_config=false
+        if ldapsearch -H ldapi:/// -Y EXTERNAL -b "${LDAP_INIT_ORG_DN:-DC=example,DC=com}" "(pwdCheckModule=*)" pwdCheckModule 2>/dev/null | grep -q "pwdCheckModule"; then
+          has_legacy_config=true
+          log INFO "Found legacy pwdCheckModule configuration in password policy entries"
+        fi
+
+        # Add new overlay configuration
+        log INFO "Adding OpenLDAP 2.6 password policy overlay configuration..."
+        cat >/tmp/migrate_ppolicy_26.ldif <<EOF
+dn: $ppolicy_dn
+changetype: modify
+add: olcPPolicyCheckModule
+olcPPolicyCheckModule: /usr/lib/ldap/pqchecker.so
+EOF
+
+        if ldapmodify -H ldapi:/// -Y EXTERNAL -f /tmp/migrate_ppolicy_26.ldif 2>&1 | log INFO; then
+          log INFO "Successfully migrated password policy overlay configuration"
+          if [[ $has_legacy_config == true ]]; then
+            log WARN "Legacy pwdCheckModule entries found in password policy entries."
+            log WARN "These are now ignored in OpenLDAP 2.6 and can be removed manually if desired."
+            log WARN "The password checking functionality is now handled by the overlay configuration."
+          fi
+        else
+          log ERROR "Failed to apply password policy overlay migration"
+          exit 1
+        fi
+        rm -f /tmp/migrate_ppolicy_26.ldif
+      fi
+    fi
+
+    # Update version in initialized file
+    echo "$config_version" > "$initialized_file"
+
+    # Stop LDAP server after migrations
+    slapd stop
+
+    log INFO "Configuration migration completed"
+  elif [[ "$last_version" != "$config_version" ]]; then
+    log WARN "Unknown configuration version: $last_version (expected: $config_version)"
+    log WARN "Skipping migrations - manual intervention may be required"
+  else
+    log INFO "Configuration is up to date (version: $config_version)"
+  fi
 fi
 
 echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
@@ -228,53 +435,10 @@ echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
 #################################################################
 # TLS configuration
 #################################################################
-
-case "${LDAP_TLS_ENABLED:-}" in
-  true|false) ;;
-  auto) [[ -f $LDAP_TLS_CERT_FILE && -f $LDAP_TLS_KEY_FILE ]] && LDAP_TLS_ENABLED=true || LDAP_TLS_ENABLED=false ;;
-  *) log ERROR "LDAP_TLS_ENABLED must be auto|true|false"; exit 1 ;;
-esac
-
 SLAPD_EXTRA_URLS=""
 
 if [[ $LDAP_TLS_ENABLED == true ]]; then
-  log INFO "======================================="
-  log INFO "Enabling TLS support..."
-  log INFO "======================================="
-
-  if ! [[ "$LDAP_TLS_SSF" =~ ^[0-9]+$ ]] || (( LDAP_TLS_SSF < 0 || LDAP_TLS_SSF > 256 )); then
-    log ERROR "LDAP_TLS_SSF must be an integer between 0 and 256 (got '$LDAP_TLS_SSF')"
-    exit 1
-  fi
-
-  case "${LDAP_LDAPS_ENABLED:-}" in
-    true|false) log INFO "LDAPS enabled (port 636): $LDAP_LDAPS_ENABLED";;
-    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
-  esac
-
-  case "${LDAP_TLS_VERIFY_CLIENT:-}" in
-    never|allow|try|demand) log INFO "TLS_VERIFY_CLIENT: $LDAP_TLS_VERIFY_CLIENT";;
-    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
-  esac
-
-
-  if [[ ! -f ${LDAP_TLS_KEY_FILE:-} ]]; then
-    log ERROR "TLS requested but LDAP_TLS_KEY_FILE [${LDAP_TLS_KEY_FILE:-}] not accessible"
-    exit 1
-  fi
-  if [[ ! -f ${LDAP_TLS_CERT_FILE:-} ]]; then
-    log ERROR "TLS requested but LDAP_TLS_CERT_FILE [${LDAP_TLS_CERT_FILE:-}] not accessible"
-    exit 1
-  fi
-
-  install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
-  install -o openldap -g openldap -m 0600 "$LDAP_TLS_KEY_FILE" /etc/ldap/certs/server.key
-  install -o openldap -g openldap -m 0644 "$LDAP_TLS_CERT_FILE" /etc/ldap/certs/server.crt
-
-  if [[ -f ${LDAP_TLS_CA_FILE:-} ]]; then
-    install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
-    install -o openldap -g openldap -m 0644 "$LDAP_TLS_CA_FILE" /etc/ldap/certs/ca.crt
-  fi
+  log BOX "Enabling TLS support..."
 
   # configure TLS key material
   cat >/tmp/tls.ldif <<EOF
@@ -316,9 +480,7 @@ EOF
   fi
 
 else
-  log INFO "======================================="
-  log INFO "Ensuring TLS support is disabled..."
-  log INFO "======================================="
+  log BOX "Ensuring TLS support is disabled..."
   cat >/tmp/tls.ldif <<EOF
 dn: cn=config
 changetype: modify
@@ -336,14 +498,7 @@ EOF
 fi
 
 # apply TLS configuration
-/etc/init.d/slapd start 2>&1 | log INFO
-# await ldap server start
-for _ in {1..8}; do
-  if ldapwhoami -H ldapi:/// | log INFO; then
-    break
-  fi
-  sleep 1
-done
+slapd start
 if [[ ${LDAP_TLS_ENABLED} == true ]]; then
   ldif modify -Y EXTERNAL /tmp/tls.ldif
 else
@@ -352,8 +507,8 @@ fi
 
 rm -f /tmp/tls.ldif
 
-/etc/init.d/slapd stop | log INFO
-sleep 3
+slapd stop
+
 
 #################################################################
 # Configure background task for LDAP backup
@@ -365,9 +520,7 @@ if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
     exit 1
   fi
 
-  log INFO "======================================="
-  log INFO "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
-  log INFO "======================================="
+  log BOX "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
   if [[ ! $LDAP_BACKUP_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
     log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
     exit 1
@@ -394,11 +547,9 @@ fi
 #################################################################
 # Start LDAP service
 #################################################################
-log INFO "***************************************"
-log INFO "* Starting OpenLDAP: slapd..."
-log INFO "***************************************"
+log BOX "Starting OpenLDAP: slapd..."
 
-# build an array of “-d <level>” for each level in LDAP_LOG_LEVELS
+# build an array of "-d <level>" for each level in LDAP_LOG_LEVELS
 log_opts=()
 for lvl in ${LDAP_LOG_LEVELS:-}; do
   log_opts+=("-d" "$lvl")
