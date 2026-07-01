@@ -60,8 +60,8 @@ fi
 if [[ -n ${LDAP_OPENLDAP_GID:-} ]]; then
    effective_gid=$(id -g openldap)
    if [[ $LDAP_OPENLDAP_GID != "$effective_gid" ]]; then
-      log INFO "Changing GID of openldap user from $effective_gid to $LDAP_OPENLDAP_GID..."
-      usermod -o -g "$LDAP_OPENLDAP_GID" openldap
+      log INFO "Changing GID of openldap group from $effective_gid to $LDAP_OPENLDAP_GID..."
+      groupmod -o -g "$LDAP_OPENLDAP_GID" openldap
    fi
 fi
 chown -R openldap:openldap /etc/ldap
