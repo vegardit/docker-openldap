@@ -265,8 +265,9 @@ LDAP traffic can be encrypted in **two** complementary ways:
 The UID/GID of the user running the OpenLDAP service can be aligned with the docker host using the environment variables
 `LDAP_OPENLDAP_UID` and `LDAP_OPENLDAP_GID`.
 
-During each container start it is verified that the given UID/GID matches the currently effective UID/GID. If not, the UID/GID
-of the `openldap` user are changed accordingly and `chown` on `/etc/ldap` and `/var/lib/slapd` is executed before the OpenLDAP service is started.
+During each container start, the image checks the configured UID against the effective UID of the `openldap` user.
+It checks the configured GID against the GID of the `openldap` group.
+If either value differs, the user UID or group GID is changed and `chown` on `/etc/ldap` and `/var/lib/ldap` is executed before the OpenLDAP service is started.
 
 ### <a name="backup"></a>Periodic LDAP Backup
 
