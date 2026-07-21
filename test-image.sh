@@ -20,6 +20,27 @@ function cleanup() {
 }
 trap cleanup EXIT
 
+function create_fresh_volumes() {
+  for volume in "$config_volume" "$data_volume"; do
+    docker volume create "$volume" >/dev/null
+    # Reproduce fresh ext-backed mounts whose filesystem metadata makes `ls`
+    # non-empty before the application has written anything.
+    docker run --rm \
+      --mount "type=volume,src=$volume,dst=/mnt" \
+      "$image_name" mkdir /mnt/lost+found
+  done
+}
+
+function start_container() {
+  docker run --detach --name "$container" \
+    --env LDAP_BACKUP_TIME= \
+    --env LDAP_INIT_ROOT_USER_PW=test-only-password \
+    "$@" \
+    --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
+    --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
+    "$image_name" >/dev/null
+}
+
 function wait_until_ready() {
   local container_logs
 
@@ -41,21 +62,8 @@ function wait_until_ready() {
   return 1
 }
 
-for volume in "$config_volume" "$data_volume"; do
-  docker volume create "$volume" >/dev/null
-  # Reproduce fresh ext-backed mounts whose filesystem metadata makes `ls`
-  # non-empty before the application has written anything.
-  docker run --rm \
-    --mount "type=volume,src=$volume,dst=/mnt" \
-    "$image_name" mkdir /mnt/lost+found
-done
-
-docker run --detach --name "$container" \
-  --env LDAP_BACKUP_TIME= \
-  --env LDAP_INIT_ROOT_USER_PW=test-only-password \
-  --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
-  --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
-  "$image_name" >/dev/null
+create_fresh_volumes
+start_container
 
 wait_until_ready
 docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
@@ -67,15 +75,48 @@ docker exec "$container" test -d /var/lib/ldap/lost+found
 # crash recovery, then attach a new container to the same persistent volumes.
 docker stop "$container" >/dev/null
 docker rm "$container" >/dev/null
-docker run --detach --name "$container" \
-  --env LDAP_BACKUP_TIME= \
-  --env LDAP_INIT_ROOT_USER_PW=test-only-password \
-  --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
-  --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
-  "$image_name" >/dev/null
+start_container
 
 wait_until_ready
 if [[ $(docker logs "$container" 2>&1) == *"Applying initial configuration"* ]]; then
   echo "Existing LDAP volumes were unexpectedly reinitialized." >&2
   exit 1
 fi
+
+docker stop "$container" >/dev/null
+docker rm "$container" >/dev/null
+docker volume rm "$config_volume" "$data_volume" >/dev/null
+create_fresh_volumes
+
+# A bad organization DN must fail before non-idempotent LDAP changes, leaving
+# the seeded volumes safe for a corrected retry.
+start_container --env LDAP_INIT_ORG_DN=invalid
+for _ in {1..120}; do
+  if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ $(docker inspect --format '{{.State.Running}}' "$container") == true ]]; then
+  docker logs "$container" >&2
+  echo "Invalid LDAP_INIT_ORG_DN did not stop the container." >&2
+  exit 1
+fi
+
+failure_logs=$(docker logs "$container" 2>&1)
+if [[ $(docker inspect --format '{{.State.ExitCode}}' "$container") == 0 ]] || \
+    [[ $failure_logs != *"Unable to derive required 'o' attribute"* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "Invalid LDAP_INIT_ORG_DN did not report the expected failure." >&2
+  exit 1
+fi
+if [[ $failure_logs == *"Starting slapd for init/migration..."* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "LDAP initialization started before organization validation completed." >&2
+  exit 1
+fi
+
+docker rm "$container" >/dev/null
+start_container
+wait_until_ready
+docker exec "$container" test -f /etc/ldap/slapd.d/initialized
