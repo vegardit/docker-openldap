@@ -20,6 +20,27 @@ function cleanup() {
 }
 trap cleanup EXIT
 
+function wait_until_ready() {
+  local container_logs
+
+  # Initialization starts a temporary slapd first; require the final startup
+  # message plus a live socket so the intermediate service cannot satisfy this.
+  for _ in {1..120}; do
+    container_logs=$(docker logs "$container" 2>&1)
+    if [[ $container_logs == *"Starting OpenLDAP: slapd..."* ]] && \
+        docker exec "$container" ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  docker logs "$container" >&2
+  return 1
+}
+
 for volume in "$config_volume" "$data_volume"; do
   docker volume create "$volume" >/dev/null
   # Reproduce fresh ext-backed mounts whose filesystem metadata makes `ls`
@@ -36,23 +57,25 @@ docker run --detach --name "$container" \
   --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
   "$image_name" >/dev/null
 
-# Initialization starts a temporary slapd first; wait for the final service
-# instead of treating that intermediate socket as success.
-for _ in {1..120}; do
-  container_logs=$(docker logs "$container" 2>&1)
-  if [[ $container_logs == *"Starting OpenLDAP: slapd..."* ]] && \
-      docker exec "$container" ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
-    docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
-    docker exec "$container" test -s /var/lib/ldap/data.mdb
-    docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
-    docker exec "$container" test -d /var/lib/ldap/lost+found
-    exit 0
-  fi
-  if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
-    break
-  fi
-  sleep 0.5
-done
+wait_until_ready
+docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
+docker exec "$container" test -s /var/lib/ldap/data.mdb
+docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
+docker exec "$container" test -d /var/lib/ldap/lost+found
 
-docker logs "$container" >&2
-exit 1
+# Stop cleanly so the next start tests initialization state rather than MDB
+# crash recovery, then attach a new container to the same persistent volumes.
+docker stop "$container" >/dev/null
+docker rm "$container" >/dev/null
+docker run --detach --name "$container" \
+  --env LDAP_BACKUP_TIME= \
+  --env LDAP_INIT_ROOT_USER_PW=test-only-password \
+  --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
+  --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
+  "$image_name" >/dev/null
+
+wait_until_ready
+if [[ $(docker logs "$container" 2>&1) == *"Applying initial configuration"* ]]; then
+  echo "Existing LDAP volumes were unexpectedly reinitialized." >&2
+  exit 1
+fi
