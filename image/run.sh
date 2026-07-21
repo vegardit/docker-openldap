@@ -261,6 +261,13 @@ if [ ! -e "$initialized_file" ]; then
     fi
   done
 
+  # Report a broken or skipped config seed directly; otherwise slapd exposes it
+  # only as an opaque readiness timeout several steps later.
+  if [[ ! -f /etc/ldap/slapd.d/cn=config.ldif ]]; then
+    log ERROR "Cannot initialize: [/etc/ldap/slapd.d/cn=config.ldif] is missing after configuration seeding."
+    exit 1
+  fi
+
   if [[ -z ${LDAP_INIT_ROOT_USER_DN:-} ]]; then
     log ERROR "LDAP_INIT_ROOT_USER_DN variable is not set!"
     exit 1
