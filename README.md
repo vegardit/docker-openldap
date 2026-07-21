@@ -185,7 +185,7 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
     **Docker Compose example with bind-mount at custom location:**
 
-    Pointing LDAP_TLS_KEY_FILE and LDAP_TLS_CRT_FILE to paths accessible from within the container will automatically enable STARTTLS and LDAPS support.
+    Pointing LDAP_TLS_KEY_FILE and LDAP_TLS_CERT_FILE to paths accessible from within the container will automatically enable STARTTLS and LDAPS support.
 
     ```yaml
     services:
@@ -304,7 +304,7 @@ services:
 
 #### DB Indexes
 
-The database indexes configured during initial container launch are imported from [/opt/ldifs/init_backend_indexes.ldif](image/ldifs/init_mdb_indexes.ldif).
+The database indexes configured during initial container launch are imported from [/opt/ldifs/init_mdb_indexes.ldif](image/ldifs/init_mdb_indexes.ldif).
 
 To use other indexes, mount a custom file at that path **before** initial container launch.
 
