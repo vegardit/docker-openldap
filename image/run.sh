@@ -282,6 +282,38 @@ if [ ! -e "$initialized_file" ]; then
   LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
   # LDAP_INIT_ROOT_USER_PW_HASHED is referenced in /opt/ldifs/init_mdb_acls.ldif
 
+  if [[ -z ${LDAP_INIT_ORG_DN:-} ]]; then
+    log ERROR "LDAP_INIT_ORG_DN variable is not set!"
+    exit 1
+  fi
+
+  # Validate derived organization attributes before non-idempotent schema and
+  # LDAP changes so a bad DN leaves initialization retryable.
+  if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]] && [[ $LDAP_INIT_ORG_DN =~ [oO]=([^,]*) ]]; then
+    # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "O=..." is present
+    # e.g. LDAP_INIT_ORG_DN="O=example.com"               -> "o: example.com"
+    # e.g. LDAP_INIT_ORG_DN="O=Example,DC=example,DC=com" -> "o: Example"
+    LDAP_INIT_ORG_ATTR_O=${BASH_REMATCH[1]}
+  fi
+  if [[ $LDAP_INIT_ORG_DN =~ [dD][cC]=([^,]*) ]]; then
+    LDAP_INIT_ORG_ATTR_DC=${BASH_REMATCH[1]}
+    # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "DC=..." is present
+    if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
+      # e.g. LDAP_INIT_ORG_DN="DC=example,DC=com" -> "o: example.com"
+      LDAP_INIT_ORG_ATTR_O=$(echo "$LDAP_INIT_ORG_DN" | grep -ioP 'DC=\K[^,]+' | paste -sd '.')
+    fi
+    # shellcheck disable=SC2034  # Referenced in /opt/ldifs/init_org_tree.ldif.
+    LDAP_INIT_ORG_COMPUTED_ATTRS="objectClass: dcObject
+o: $LDAP_INIT_ORG_ATTR_O
+dc: $LDAP_INIT_ORG_ATTR_DC"
+  elif [[ -n ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
+    # shellcheck disable=SC2034  # Referenced in /opt/ldifs/init_org_tree.ldif.
+    LDAP_INIT_ORG_COMPUTED_ATTRS="o: $LDAP_INIT_ORG_ATTR_O"
+  else
+    log ERROR "Unable to derive required 'o' attribute of objectClass 'organization' from LDAP_INIT_ORG_DN='$LDAP_INIT_ORG_DN'"
+    exit 1
+  fi
+
   if [[ ${LDAP_INIT_RFC2307BIS_SCHEMA:-} == 1 ]]; then
     log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
@@ -323,32 +355,6 @@ if [ ! -e "$initialized_file" ]; then
 
   if [[ ${LDAP_INIT_ALLOW_CONFIG_ACCESS:-false} == true ]]; then
     ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
-  fi
-
-  # calculate LDAP_INIT_ORG_COMPUTED_ATTRS variable, referenced in init_org_tree.ldif
-  if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]] && [[ ${LDAP_INIT_ORG_DN:-} =~ [oO]=([^,]*) ]]; then
-    # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "O=..." is present
-    # e.g. LDAP_INIT_ORG_DN="O=example.com"               -> "o: example.com"
-    # e.g. LDAP_INIT_ORG_DN="O=Example,DC=example,DC=com" -> "o: Example"
-    LDAP_INIT_ORG_ATTR_O=${BASH_REMATCH[1]}
-  fi
-  if [[ $LDAP_INIT_ORG_DN =~ [dD][cC]=([^,]*) ]]; then
-    LDAP_INIT_ORG_ATTR_DC=${BASH_REMATCH[1]}
-    # derive 'o:' from LDAP_INIT_ORG_DN if LDAP_INIT_ORG_ATTR_O is unset and "DC=..." is present
-    if [[ -z ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
-      # e.g. LDAP_INIT_ORG_DN="DC=example,DC=com" -> "o: example.com"
-      LDAP_INIT_ORG_ATTR_O=$(echo "$LDAP_INIT_ORG_DN" | grep -ioP 'DC=\K[^,]+' | paste -sd '.')
-    fi
-    # shellcheck disable=SC2034  # LDAP_INIT_ORG_COMPUTED_ATTRS appears unused
-    LDAP_INIT_ORG_COMPUTED_ATTRS="objectClass: dcObject
-o: $LDAP_INIT_ORG_ATTR_O
-dc: $LDAP_INIT_ORG_ATTR_DC"
-  elif [[ -n ${LDAP_INIT_ORG_ATTR_O:-} ]]; then
-    # shellcheck disable=SC2034  # LDAP_INIT_ORG_COMPUTED_ATTRS appears unused
-    LDAP_INIT_ORG_COMPUTED_ATTRS="o: $LDAP_INIT_ORG_ATTR_O"
-  else
-    log ERROR "Unable to derive required 'o' attribute of objectClass 'organization' from LDAP_INIT_ORG_DN='$LDAP_INIT_ORG_DN'"
-    exit 1
   fi
 
   ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
