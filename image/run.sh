@@ -249,12 +249,13 @@ if [ ! -e "$initialized_file" ]; then
     declare "${name}=$(echo "${!name}" | interpolate)"
   done
 
-  # pre-populate folders in case they are empty
+  # ext filesystems create lost+found at the root of a fresh volume. It is
+  # filesystem metadata, so ignore only that directory when deciding to seed.
   for folder in "/var/lib/ldap" "/etc/ldap/slapd.d"; do
     if [[ $folder -ef "${folder}_orig" ]]; then
       continue
     fi
-    if [[ -z $(ls $folder) ]]; then
+    if [[ -z $(find "$folder" -mindepth 1 -maxdepth 1 ! \( -type d -name lost+found \) -print -quit) ]]; then
       log INFO "Initializing [$folder]..."
       cp -r --preserve=all ${folder}_orig/. $folder
     fi

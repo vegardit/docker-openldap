@@ -5,7 +5,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
-shared_lib="$(dirname "${BASH_SOURCE[0]}")/.shared"
+# Build scripts can run outside the checkout, so resolve executable paths from
+# this file instead of trusting the caller's working directory.
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+shared_lib="$script_dir/.shared"
 [[ -e $shared_lib ]] || curl -sSfL "https://raw.githubusercontent.com/vegardit/docker-shared/v1/download.sh?_=$(date +%s)" | bash -s v1 "$shared_lib" || exit 1
 # shellcheck disable=SC1091  # Not following: $shared_lib/lib/build-image-init.sh was not specified as input
 source "$shared_lib/lib/build-image-init.sh"
@@ -132,6 +135,13 @@ if [[ ${build_multi_arch:-} == "true" ]]; then
     docker tag '$LOCAL_REGISTRY/$image_name' '$image_name'
   "
 fi
+
+
+#################################################
+# test persistent-volume initialization
+#################################################
+run_step "Testing persistent-volume initialization" -- \
+  bash "$script_dir/test-image.sh" "$image_name"
 
 
 #################################################
