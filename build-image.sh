@@ -82,7 +82,7 @@ trap 'docker buildx rm --force "$builder_name"' EXIT
 #################################################
 # build the image
 #################################################
-image_name=image_repo:${tags[0]}
+image_name=$image_repo:${tags[0]}
 
 # shellcheck disable=SC2154  # base_layer_cache_key is referenced but not assigned
 build_opts=(
