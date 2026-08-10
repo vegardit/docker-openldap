@@ -93,7 +93,7 @@ if [[ $LDAP_TLS_ENABLED == true ]]; then
 
   case "${LDAP_TLS_VERIFY_CLIENT:-}" in
     never|allow|try|demand) log INFO "TLS_VERIFY_CLIENT: $LDAP_TLS_VERIFY_CLIENT";;
-    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
+    *) log ERROR "LDAP_TLS_VERIFY_CLIENT must be never|allow|try|demand"; exit 1 ;;
   esac
 
   if [[ ! -f ${LDAP_TLS_KEY_FILE:-} ]]; then
