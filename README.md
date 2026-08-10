@@ -147,13 +147,15 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
     |Variable                |Default                       |Description
     |------------------------|------------------------------|-----------
-    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if both certificate and private key are present at `/etc/ldap/certs/server.{crt,key}` (or supplied via `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
+    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if the files referenced by `LDAP_TLS_CERT_FILE` and `LDAP_TLS_KEY_FILE` exist (defaults: `/run/secrets/ldap/server.crt` and `/run/secrets/ldap/server.key`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
     |`LDAP_LDAPS_ENABLED`    |`true`                        |*(Only applies if TLS is enabled)*<br>`true` - enable implicit TLS (LDAPS) listener on port 636 (`ldaps://`)
     |`LDAP_TLS_CERT_FILE`    |`/run/secrets/ldap/server.crt`|Path to the server certificate **inside** the container
     |`LDAP_TLS_KEY_FILE`     |`/run/secrets/ldap/server.key`|Path to the matching private key **inside** the container
     |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates
-    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7B)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
-    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
+    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7D)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
+    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. Accepted values are integers from `0` through `256`. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
+
+    `LDAP_TLS_ENABLED=auto` is reevaluated on every start. Use `true` when missing certificate files must stop the container instead of disabling TLS.
 
     *How to generate a self-signed cert for testing:*
 
