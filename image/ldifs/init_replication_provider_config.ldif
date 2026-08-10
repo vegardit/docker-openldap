@@ -1,0 +1,35 @@
+version: 1
+
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: syncprov
+
+dn: olcOverlay=syncprov,olcDatabase={1}mdb,cn=config
+objectClass: top
+objectClass: olcConfig
+objectClass: olcOverlayConfig
+objectClass: olcSyncProvConfig
+olcOverlay: syncprov
+# Persist contextCSN often enough to bound unclean-restart recovery. A session
+# log is omitted because its useful in-memory size depends on write rate and
+# reconnect duration, and the log is lost on provider restart.
+# NOTE: Reconnects can scan the full suffix; add a measured olcSpSessionlog
+# value when that cost becomes material.
+olcSpCheckpoint: 100 10
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+# Insert the replication identity before attribute-specific ACLs so password
+# hashes replicate too. "break" preserves the existing rules for every other DN.
+add: olcAccess
+olcAccess: {1}to * by dn.exact="${LDAP_INIT_REPLICATION_BIND_DN}" read by * break
+-
+# Initial refreshes must not be truncated by limits intended for LDAP clients.
+add: olcLimits
+olcLimits: dn.exact="${LDAP_INIT_REPLICATION_BIND_DN}" time.soft=unlimited time.hard=unlimited size.soft=unlimited size.hard=unlimited
+-
+# Syncrepl searches these operational attributes during refreshes. Keep their
+# write/storage cost out of servers that have no replication role.
+add: olcDbIndex
+olcDbIndex: entryCSN,entryUUID eq

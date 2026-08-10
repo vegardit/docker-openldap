@@ -314,6 +314,94 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     exit 1
   fi
 
+  replication_role=${LDAP_INIT_REPLICATION_ROLE:-}
+  case "$replication_role" in
+    '')
+      if [[ -n ${LDAP_INIT_REPLICATION_PROVIDER_URI:-} || -n ${LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE:-} ]]; then
+        log ERROR "LDAP_INIT_REPLICATION_ROLE must be set when replication options are configured"
+        exit 1
+      fi
+      ;;
+    provider|consumer)
+      # Replication settings are initialization inputs. Keeping this validation
+      # inside the first-run block lets an initialized node restart without the
+      # secret file, while its persisted cn=config remains authoritative.
+      if [[ $LDAP_TLS_ENABLED != true ]]; then
+        log ERROR "Replication requires TLS certificate and key files"
+        exit 1
+      fi
+      # Consumers need this CA to authenticate their provider. A provider only
+      # needs it when its incoming TLS policy verifies client certificates.
+      if [[ ! -s /etc/ldap/certs/ca.crt &&
+            ( $replication_role == consumer || $LDAP_TLS_VERIFY_CLIENT != never ) ]]; then
+        log ERROR "Replication requires an accessible LDAP_TLS_CA_FILE unless a provider sets LDAP_TLS_VERIFY_CLIENT=never"
+        exit 1
+      fi
+      if [[ $replication_role == provider && $LDAP_LDAPS_ENABLED != true ]]; then
+        log ERROR "A replication provider requires LDAP_LDAPS_ENABLED=true"
+        exit 1
+      fi
+      if [[ $replication_role == provider && -n ${LDAP_INIT_REPLICATION_PROVIDER_URI:-} ]]; then
+        log ERROR "LDAP_INIT_REPLICATION_PROVIDER_URI is only valid for a replication consumer"
+        exit 1
+      fi
+      if [[ $replication_role == consumer ]]; then
+        replication_provider_uri=${LDAP_INIT_REPLICATION_PROVIDER_URI:-}
+        # Syncrepl uses simple bind. Restricting this bootstrap API to implicit
+        # TLS ensures transport encryption is active before authentication.
+        if [[ $replication_provider_uri != ldaps://?* || $replication_provider_uri == *[[:space:]]* ||
+              $replication_provider_uri == *\"* || $replication_provider_uri == *\\* ]]; then
+          log ERROR "LDAP_INIT_REPLICATION_PROVIDER_URI must be a single ldaps:// URI without whitespace, quotes, or backslashes"
+          exit 1
+        fi
+      fi
+      # Compose mounts a secret with this name at the conventional path. Resolve
+      # the fallback only after a role is selected so it cannot enable or reject
+      # replication on an otherwise ordinary server.
+      replication_bind_password_file=${LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE:-/run/secrets/ldap-replication-password}
+      if [[ ! -r $replication_bind_password_file ]]; then
+        log ERROR "LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE [$replication_bind_password_file] must name a readable secret file"
+        exit 1
+      fi
+
+      LDAP_INIT_REPLICATION_BIND_PASSWORD=$(<"$replication_bind_password_file")
+      # Command substitution strips the LF from a Docker secret but leaves the
+      # CR from a Windows CRLF terminator. Remove only that trailing CR; the
+      # validation below still rejects embedded line breaks.
+      LDAP_INIT_REPLICATION_BIND_PASSWORD=${LDAP_INIT_REPLICATION_BIND_PASSWORD%$'\r'}
+      if [[ -z $LDAP_INIT_REPLICATION_BIND_PASSWORD ]]; then
+        log ERROR "LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE must not be empty"
+        exit 1
+      fi
+      # The consumer credential is persisted inside a quoted olcSyncrepl value.
+      # Reject only characters that could escape that field or split the LDIF;
+      # ordinary spaces and punctuation remain valid password characters.
+      if [[ $LDAP_INIT_REPLICATION_BIND_PASSWORD == *$'\n'* ||
+            $LDAP_INIT_REPLICATION_BIND_PASSWORD == *$'\r'* ||
+            $LDAP_INIT_REPLICATION_BIND_PASSWORD == *\"* ||
+            $LDAP_INIT_REPLICATION_BIND_PASSWORD == *\\* ]]; then
+        log ERROR "The replication bind password must not contain line breaks, quotes, or backslashes"
+        exit 1
+      fi
+
+      # These derived values are private template inputs; the public API keeps
+      # the replication identity fixed so two nodes cannot silently disagree.
+      # shellcheck disable=SC2034  # Referenced in replication LDIF templates.
+      LDAP_INIT_REPLICATION_BIND_DN="uid=replicator,$LDAP_INIT_ORG_DN"
+      if [[ $replication_role == provider ]]; then
+        # Bash treats trailing newlines as file terminators when it reads the
+        # secret above. Hash that normalized value too, and use stdin so the
+        # plaintext password does not appear in the slappasswd process arguments.
+        # shellcheck disable=SC2034  # Referenced in the provider account LDIF.
+        LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED=$(printf '%s' "$LDAP_INIT_REPLICATION_BIND_PASSWORD" | slappasswd -T /dev/stdin)
+      fi
+      ;;
+    *)
+      log ERROR "LDAP_INIT_REPLICATION_ROLE must be provider|consumer"
+      exit 1
+      ;;
+  esac
+
   if [[ ${LDAP_INIT_RFC2307BIS_SCHEMA:-} == 1 ]]; then
     log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
@@ -357,17 +445,36 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
   fi
 
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
+  if [[ $replication_role == provider ]]; then
+    ldif add -Y EXTERNAL /opt/ldifs/init_replication_provider_config.ldif
+  fi
+
+  if [[ $replication_role == consumer ]]; then
+    # A consumer must let syncrepl create the suffix and all children. Loading
+    # the image's sample tree first would make the initial refresh collide with
+    # entries that have the same DNs but no replication metadata.
+    ldif modify -Y EXTERNAL /opt/ldifs/init_replication_consumer.ldif
+  else
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
+    if [[ $replication_role == provider ]]; then
+      ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_replication_provider_account.ldif
+    fi
+  fi
 
   log INFO "---------------------------------------"
 
   echo "$config_version" >"$initialized_file"
   rm -f /tmp/*.ldif
 
-  log INFO "Creating LDAP backup at [$LDAP_BACKUP_FILE]..."
-  slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
+  # Syncrepl starts asynchronously when the consumer config is committed, so
+  # this point cannot guarantee a complete replica. Let scheduled backups run
+  # after startup instead of publishing an empty or partial initial export.
+  if [[ $replication_role != consumer ]]; then
+    log INFO "Creating LDAP backup at [$LDAP_BACKUP_FILE]..."
+    slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
+  fi
 
   slapd stop
 
@@ -442,6 +549,28 @@ EOF
   else
     log INFO "Configuration is up to date (version: $config_version)"
   fi
+fi
+
+# Bootstrap variables disappear on normal restarts, so persisted olcSyncrepl is
+# the authoritative indication that this database still has a consumer engine.
+# Avoid grep -q: its early exit can SIGPIPE slapcat, and pipefail would then hide
+# a real match by making the condition fail.
+is_syncrepl_consumer=false
+if slapcat -n 0 -o ldif-wrap=no | grep -F 'olcSyncrepl:' >/dev/null; then
+  is_syncrepl_consumer=true
+fi
+
+# Bootstrap inputs may be omitted after initialization, but the built-in
+# consumer persists this absolute CA path in cn=config. Check it before slapd
+# turns a missing runtime mount into an unrelated readiness timeout.
+# Avoid grep -q here: its early exit can SIGPIPE slapcat, and pipefail would then
+# hide a real match by making the condition fail.
+if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
+    slapcat -n 0 -o ldif-wrap=no |
+      grep -F 'olcSyncrepl:' |
+      grep -F 'tls_cacert=/etc/ldap/certs/ca.crt' >/dev/null; then
+  log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
+  exit 1
 fi
 
 echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
@@ -541,10 +670,84 @@ if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
     exit 1
   fi
 
-  # testing if LDAP_BACKUP_FILE is writeable
-  touch "$LDAP_BACKUP_FILE"
+  # Using the destination itself as the writeability probe would publish an
+  # empty file before a new consumer has received its first replicated entry.
+  # A temporary sibling exercises the same directory without resembling a backup.
+  if [[ -e $LDAP_BACKUP_FILE || -L $LDAP_BACKUP_FILE ]]; then
+    touch "$LDAP_BACKUP_FILE"
+  else
+    backup_write_probe=$(mktemp "$(dirname -- "$LDAP_BACKUP_FILE")/.ldap-backup-write-test.XXXXXX")
+    rm -f "$backup_write_probe"
+  fi
 
   function backup_ldap() {
+    if [[ $is_syncrepl_consumer == true ]]; then
+      log INFO "Waiting for the initial syncrepl refresh before enabling periodic LDAP backups..."
+      # The worker starts immediately before the final slapd process. Wait for
+      # its local socket so startup connection failures are not mistaken for an
+      # incomplete syncrepl refresh.
+      while ! ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null 2>&1; do
+        sleep 1s
+      done
+
+      local backup_suffix
+      local backup_suffix_ldif
+      # Bootstrap variables may be omitted or changed on a normal restart, so
+      # use the suffix that is authoritative in the persisted configuration.
+      if ! backup_suffix_ldif=$(
+        ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+          -b 'olcDatabase={1}mdb,cn=config' -s base '(objectClass=*)' olcSuffix |
+          sed -n '/^olcSuffix: /p; /^olcSuffix:: /p'
+      ); then
+        log ERROR "Cannot determine the persisted MDB suffix required to verify the initial syncrepl refresh."
+        return 1
+      fi
+      case "$backup_suffix_ldif" in
+        'olcSuffix: '*) backup_suffix=${backup_suffix_ldif#olcSuffix: } ;;
+        'olcSuffix:: '*)
+          # LDIF base64-encodes values that are not safe ASCII. Decode that
+          # representation so non-ASCII organization DNs remain valid search bases.
+          if ! backup_suffix=$(printf '%s' "${backup_suffix_ldif#olcSuffix:: }" | base64 -d); then
+            log ERROR "Cannot decode the persisted MDB suffix required to verify the initial syncrepl refresh."
+            return 1
+          fi
+          ;;
+        *)
+          log ERROR "Cannot determine the persisted MDB suffix required to verify the initial syncrepl refresh."
+          return 1
+          ;;
+      esac
+
+      # Initial-refresh entries carry no synchronization cookie. OpenLDAP writes
+      # contextCSN after the refresh completes, so its presence distinguishes a
+      # coherent replica from an empty or partially populated database. Query
+      # only the suffix entry; repeatedly exporting the database makes startup
+      # cost grow with the number of entries already received.
+      while true; do
+        local refresh_state
+        local refresh_status
+        if refresh_state=$(
+          ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+            -b "$backup_suffix" -s base '(contextCSN=*)' contextCSN 2>&1
+        ); then
+          if [[ $refresh_state == contextCSN:\ * || $refresh_state == *$'\ncontextCSN: '* ]]; then
+            break
+          fi
+        else
+          refresh_status=$?
+          # LDAP result 32 means that syncrepl has not created the suffix entry
+          # yet. Other errors are configuration failures, not a reason to wait
+          # forever while silently disabling backups.
+          if (( refresh_status != 32 )); then
+            log ERROR "Cannot query syncrepl refresh state for [$backup_suffix]: $refresh_state"
+            return 1
+          fi
+        fi
+        sleep 10s
+      done
+      log INFO "Initial syncrepl refresh completed; enabling periodic LDAP backups."
+    fi
+
     while true; do
       while [[ ${LDAP_BACKUP_TIME} != "$(date +%H:%M)" ]]; do
         sleep 10s

@@ -1,0 +1,23 @@
+version: 1
+
+# Human-user lockout and expiry rules are unsafe for a fixed service DN: an
+# unauthenticated client could otherwise stop every consumer from reconnecting.
+dn: cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: device
+objectClass: pwdPolicy
+cn: ReplicationPasswordPolicy
+pwdAttribute: userPassword
+pwdLockout: FALSE
+pwdMaxAge: 0
+pwdMustChange: FALSE
+pwdAllowUserChange: FALSE
+
+# The fixed root-level DN has no dependency on optional organizational units,
+# so provider initialization also works with a customized seed tree.
+dn: ${LDAP_INIT_REPLICATION_BIND_DN}
+objectClass: account
+objectClass: simpleSecurityObject
+uid: replicator
+userPassword: ${LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED}
+pwdPolicySubentry: cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}

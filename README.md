@@ -7,11 +7,12 @@
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 1. [What is it?](#what-is-it)
-1. [Configuration](#config)
-   1. [Initial configuration](#initial-config)
-   1. [Initial LDAP tree](#initial_ldaptree)
+1. [Configuration](#configuration)
+   1. [Initial configuration](#initial-configuration)
+   1. [Initial LDAP tree](#initial-ldap-tree)
    1. [Customizing the Password Policy](#ppolicy)
-   1. [Transport Encryption (LDAPS/STARTTLS)](#transport_encryption)
+   1. [Transport Encryption (LDAPS/STARTTLS)](#transport-encryption)
+   1. [Syncrepl over LDAPS](#syncrepl-ldaps)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
    1. [Periodic LDAP Backup](#backup)
    1. [Synchronizing timezone/time with docker host](#timesync)
@@ -28,9 +29,9 @@ built for easy deployment of an [OpenLDAP 2.6](https://www.openldap.org/doc/adm
 
 Automatically rebuilt **weekly** to include the latest OS security fixes.
 
-## <a name="config"></a>Configuration
+## <a name="configuration"></a>Configuration
 
-### <a name="initial-config"></a>Initial configuration
+### <a name="initial-configuration"></a>Initial configuration
 
 Various parts of the LDAP server can be configured via environment variables. All environment variables starting with `LDAP_INIT_`
 are only evaluated on the **first** container launch. Changing their values later has no effect when restarting or updating the container.
@@ -90,7 +91,7 @@ Environment variables can for example be set in one of the following ways:
      vegardit/openldap
    ```
 
-### <a name="initial_ldaptree"></a>Initial LDAP tree
+### <a name="initial-ldap-tree"></a>Initial LDAP tree
 
 The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
 You can mount a custom file at that path if you need changes.
@@ -135,7 +136,7 @@ A custom rule can be provided via an environment variable, e.g.:
 LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 ```
 
-### <a name="transport_encryption"></a>Transport Encryption (LDAPS/STARTTLS)
+### <a name="transport-encryption"></a>Transport Encryption (LDAPS/STARTTLS)
 
 LDAP traffic can be encrypted in **two** complementary ways:
 
@@ -258,6 +259,50 @@ LDAP traffic can be encrypted in **two** complementary ways:
         exposedByDefault: false # ignore containers that don't have a traefik.enable=true label
         watch: true
     ```
+
+
+### <a name="syncrepl-ldaps"></a>Syncrepl over LDAPS
+
+Syncrepl copies LDAP entries between two OpenLDAP servers:
+
+- The **provider** is the source server. Applications make directory changes here.
+- The **consumer** is the replica. It connects to the provider and copies its entries.
+
+Both servers run the same image. The image configures one-way replication during their first initialization and makes the consumer read-only.
+You write LDAP entries to the provider; the consumer receives a copy and rejects local changes.
+
+The minimum role-specific settings are:
+
+```sh
+# Provider
+LDAP_INIT_REPLICATION_ROLE=provider
+LDAP_TLS_VERIFY_CLIENT=never
+
+# Consumer
+LDAP_INIT_REPLICATION_ROLE=consumer
+LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider
+```
+
+Both nodes must mount the same replication-password secret at `/run/secrets/ldap-replication-password`, or set `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to another readable file.
+Use a generated, high-entropy value. The provider deliberately exempts this service account from password lockout so failed authentication attempts cannot lock the account and stop replication.
+Mount each node's server certificate and key at the default TLS paths; `LDAP_TLS_ENABLED=auto` enables TLS when both files are present.
+The consumer must mount the CA certificate on every start so it can verify the provider.
+The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as above.
+
+Use separate, initially empty config and data volumes for each node. The image skips local sample entries on a consumer so its first synchronization can populate the database.
+On a new consumer, the periodic backup worker waits for that first synchronization and does not create `LDAP_BACKUP_FILE` from an empty or partial replica.
+Both nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
+The provider creates `uid=replicator,${LDAP_INIT_ORG_DN}` for its replication account and `cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}` for that account's non-locking password policy.
+Because `uid` and `cn` are unique throughout the organization suffix, custom initialization LDIF must not use `uid: replicator` or `cn: ReplicationPasswordPolicy` on any other entry either.
+The provider certificate's Subject Alternative Name (SAN) must match the hostname in `LDAP_INIT_REPLICATION_PROVIDER_URI`.
+If applications connect to the consumer over LDAPS, the consumer also needs a certificate whose SAN matches its client-facing hostname.
+
+See the [complete Docker Compose example](example/docker-compose/syncrepl/) for local certificates, startup, and verification commands.
+
+Replication settings are applied only while a new config volume is initialized. Changing the bootstrap variables or secret later does not update the persisted `cn=config`.
+OpenLDAP stores the replication password in plaintext in the consumer config volume, so protect that volume accordingly.
+For configurations beyond one provider and one read-only consumer, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
+The environment-variable bootstrap supports only strict LDAPS with simple-bind authentication.
 
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user

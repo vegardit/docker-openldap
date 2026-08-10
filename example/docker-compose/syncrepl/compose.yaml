@@ -1,0 +1,51 @@
+services:
+  provider:
+    image: vegardit/openldap:latest
+    hostname: provider
+    environment:
+      LDAP_INIT_ORG_DN: DC=example,DC=com
+      LDAP_INIT_ROOT_USER_PW: ${LDAP_PROVIDER_ADMIN_PASSWORD:?Set LDAP_PROVIDER_ADMIN_PASSWORD}
+      LDAP_INIT_REPLICATION_ROLE: provider
+      # The consumer already authenticates with simple bind. Requesting its TLS
+      # certificate would add an unrelated second identity requirement.
+      LDAP_TLS_VERIFY_CLIENT: never
+    secrets:
+      - ldap-replication-password
+    volumes:
+      - provider-config:/etc/ldap/slapd.d
+      - provider-data:/var/lib/ldap
+      - ./tls/provider.crt:/run/secrets/ldap/server.crt:ro
+      - ./tls/provider.key:/run/secrets/ldap/server.key:ro
+
+  consumer:
+    image: vegardit/openldap:latest
+    hostname: consumer
+    environment:
+      LDAP_INIT_ORG_DN: DC=example,DC=com
+      LDAP_INIT_ROOT_USER_PW: ${LDAP_CONSUMER_ADMIN_PASSWORD:?Set LDAP_CONSUMER_ADMIN_PASSWORD}
+      LDAP_INIT_REPLICATION_ROLE: consumer
+      LDAP_INIT_REPLICATION_PROVIDER_URI: ldaps://provider
+      # docker compose exec inherits the container environment. OpenLDAP clients
+      # verify certificates by default, so only point them at this example's CA.
+      LDAPTLS_CACERT: /etc/ldap/certs/ca.crt
+    secrets:
+      - ldap-replication-password
+    volumes:
+      - consumer-config:/etc/ldap/slapd.d
+      - consumer-data:/var/lib/ldap
+      # This example exposes the consumer as an LDAPS read endpoint, so it needs
+      # both its own server identity and the CA used to authenticate the provider.
+      - ./tls/consumer.crt:/run/secrets/ldap/server.crt:ro
+      - ./tls/consumer.key:/run/secrets/ldap/server.key:ro
+      - ./tls/ca.crt:/run/secrets/ldap/ca.crt:ro
+
+secrets:
+  # The secret name intentionally matches the image's default replication path.
+  ldap-replication-password:
+    file: ./secrets/ldap-replication-password
+
+volumes:
+  provider-config:
+  provider-data:
+  consumer-config:
+  consumer-data:

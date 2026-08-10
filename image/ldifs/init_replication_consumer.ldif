@@ -1,0 +1,41 @@
+version: 1
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+# Consumers need the same operational-attribute indexes as providers, but
+# ordinary servers should not pay their write/storage cost.
+add: olcDbIndex
+olcDbIndex: entryCSN,entryUUID eq
+-
+# One-way replicas reject local writes because they cannot send them upstream.
+replace: olcReadOnly
+olcReadOnly: TRUE
+
+# init_module_memberof.ldif installs memberof before every other database overlay,
+# so its generated ordered config DN is stable at {0} during first initialization.
+dn: olcOverlay={0}memberof,olcDatabase={1}mdb,cn=config
+changetype: modify
+# memberof's internal refint mode is incompatible with addcheck. Standalone
+# refint stays active because its internal repairs are not replicated; each
+# replica must maintain its configured DN-valued attributes locally.
+replace: olcMemberOfRefInt
+olcMemberOfRefInt: FALSE
+-
+# Initial refresh order is not guaranteed. If a group arrives before its member,
+# addcheck lets the later member entry acquire the backlink that was missed.
+replace: olcMemberOfAddCheck
+olcMemberOfAddCheck: TRUE
+
+# Adding olcSyncrepl is deliberately the final online-config operation because
+# slapd may schedule the engine as soon as this record commits. All settings
+# needed by the initial refresh must already be active at that point.
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+add: olcSyncrepl
+# Global TLS attributes are applied later in this startup. Supplying the CA here
+# lets syncrepl verify the provider immediately, including during initialization.
+# The retry schedule also covers the normal race where both containers start at once.
+# memberOf is derived locally by the consumer overlay; accepting the provider's
+# copy as well can leave stale backlinks. reqcert validates trust, while reqsan
+# prevents a trusted certificate from falling back to a non-matching identity.
+olcSyncrepl: rid=001 provider=${LDAP_INIT_REPLICATION_PROVIDER_URI} bindmethod=simple binddn="${LDAP_INIT_REPLICATION_BIND_DN}" credentials="${LDAP_INIT_REPLICATION_BIND_PASSWORD}" searchbase="${LDAP_INIT_ORG_DN}" type=refreshAndPersist retry="5 5 60 +" timeout=5 exattrs=memberOf tls_cacert=/etc/ldap/certs/ca.crt tls_reqcert=demand tls_reqsan=demand
