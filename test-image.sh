@@ -85,11 +85,18 @@ function start_container() {
 function wait_until_ready() {
   local target_container=${1:-$container}
   local container_logs
+  local started_at
+
+  # Docker retains logs across restarts. Anchor the marker to the daemon-recorded
+  # current start so an old final-start message cannot pair with this invocation's
+  # temporary slapd, and client/daemon clock skew cannot move the boundary.
+  # Test containers do not auto-restart, so one snapshot stays authoritative.
+  started_at=$(docker inspect --format '{{.State.StartedAt}}' "$target_container")
 
   # Initialization starts a temporary slapd first; require the final startup
   # message plus a live socket so the intermediate service cannot satisfy this.
   for _ in {1..120}; do
-    container_logs=$(docker logs "$target_container" 2>&1)
+    container_logs=$(docker logs --since "$started_at" "$target_container" 2>&1)
     if [[ $container_logs == *"Starting OpenLDAP: slapd..."* ]] && \
         docker exec "$target_container" ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
       return 0
@@ -100,7 +107,7 @@ function wait_until_ready() {
     sleep 0.5
   done
 
-  docker logs "$target_container" >&2
+  docker logs --since "$started_at" "$target_container" >&2
   return 1
 }
 
