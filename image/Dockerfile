@@ -66,6 +66,9 @@ EOF
 
 WORKDIR /opt/pqchecker
 
+# NOTE: Hadolint 2.15 resets its tracked shell after ENV; remove this once it preserves the Bash SHELL.
+# https://github.com/hadolint/hadolint/issues/1241
+# hadolint ignore=SC3010
 RUN <<EOF
   set -eu
 
@@ -173,7 +176,7 @@ LABEL maintainer="$OCI_authors"
 
 # Default configuration: can be overridden at the docker command line
 # see https://github.com/hadolint/hadolint/wiki/DL3044
-# hadolint ignore=DL3044
+# hadolint ignore=DL3044,DL3064 # Sensitive values are runtime-only; the image stores empty defaults and secret file paths.
 ENV \
   INIT_SH_FILE='' \
   #
