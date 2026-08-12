@@ -81,10 +81,15 @@ case "${LDAP_TLS_ENABLED:-}" in
 esac
 
 if [[ $LDAP_TLS_ENABLED == true ]]; then
-  if ! [[ "$LDAP_TLS_SSF" =~ ^[0-9]+$ ]] || (( LDAP_TLS_SSF < 0 || LDAP_TLS_SSF > 256 )); then
+  # Bash treats leading-zero arithmetic as octal and does not detect overflow.
+  # Accept zero padding, but capture at most three digits after it so conversion
+  # is bounded; normalize once so every later use has canonical decimal syntax.
+  if ! [[ $LDAP_TLS_SSF =~ ^0*([0-9]{1,3})$ ]] ||
+      (( 10#${BASH_REMATCH[1]} > 256 )); then
     log ERROR "LDAP_TLS_SSF must be an integer between 0 and 256 (got '$LDAP_TLS_SSF')"
     exit 1
   fi
+  LDAP_TLS_SSF=$((10#${BASH_REMATCH[1]}))
 
   case "${LDAP_LDAPS_ENABLED:-}" in
     true|false) log INFO "LDAPS enabled (port 636): $LDAP_LDAPS_ENABLED";;

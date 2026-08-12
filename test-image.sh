@@ -136,7 +136,11 @@ function start_replication_node() {
     # Syncrepl authenticates with its password, but inherits the consumer's
     # server-only certificate as a client certificate. Do not request that
     # unsuitable certificate; the consumer keeps the normal incoming-TLS policy.
-    tls_server_options=(--env LDAP_TLS_VERIFY_CLIENT=never)
+    # A successful provider start covers zero-padded decimal SSF input.
+    tls_server_options=(
+      --env LDAP_TLS_VERIFY_CLIENT=never
+      --env LDAP_TLS_SSF=0128
+    )
   fi
   # Keep the CA explicit at each call site: one restart intentionally omits it
   # to prove persisted syncrepl fails closed instead of serving stale data.
@@ -327,6 +331,22 @@ wait_until_ready "$consumer_container"
 # or the scheduled worker would create an empty or partial, misleading export.
 if docker exec "$consumer_container" test -e /var/lib/ldap/data.ldif; then
   echo "The replication consumer created a backup before its initial refresh." >&2
+  exit 1
+fi
+
+# Pair the provider's accepted 0128 with a padded value above the documented
+# maximum; both cases exercise the public entrypoint environment boundary.
+invalid_tls_ssf_logs=
+if invalid_tls_ssf_logs=$(docker run --rm \
+    --env LDAP_TLS_ENABLED=true \
+    --env LDAP_TLS_SSF=0257 \
+    "$image_name" 2>&1); then
+  echo "An out-of-range LDAP_TLS_SSF unexpectedly started the container." >&2
+  exit 1
+fi
+if [[ $invalid_tls_ssf_logs != *"LDAP_TLS_SSF must be an integer between 0 and 256 (got '0257')"* ]]; then
+  printf '%s\n' "$invalid_tls_ssf_logs" >&2
+  echo "A zero-padded out-of-range LDAP_TLS_SSF was not rejected." >&2
   exit 1
 fi
 
