@@ -49,7 +49,7 @@ function wait_until_ready() {
   for _ in {1..120}; do
     container_logs=$(docker logs "$container" 2>&1)
     if [[ $container_logs == *"Starting OpenLDAP: slapd..."* ]] && \
-        docker exec "$container" ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        docker exec "$container" ldapwhoami -H ldapi:/// -Y EXTERNAL >/dev/null 2>&1; then
       return 0
     fi
     if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
