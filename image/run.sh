@@ -127,7 +127,7 @@ function ldif() {
   local tmpfile
   tmpfile=$(mktemp --suffix=.ldif /tmp/ldif.XXXXXX)
   interpolate <"$file" >"$tmpfile"
-  "ldap$action" -H ldapi:/// -Y EXTERNAL "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
+  "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
   rm -f "$tmpfile"
 }
 
