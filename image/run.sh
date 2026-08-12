@@ -139,8 +139,12 @@ function ldif() {
 function slapd() {
   local cmd="${1:-}"
   local -r RUNDIR="/run/slapd"
-  local -r LOGFILE="${SLAPD_LOG_FILE:-/tmp/slapd.log}"
-  local -r PIDFILE="${SLAPD_INIT_PIDFILE:-$RUNDIR/.init.pid}"
+  # /run/slapd must remain service-writable for its socket. Keep root's default
+  # log and PID state in a sibling directory the service cannot modify; explicit
+  # path overrides remain trusted operator input.
+  local -r INIT_STATE_DIR="/run/slapd-init"
+  local -r LOGFILE="${SLAPD_LOG_FILE:-$INIT_STATE_DIR/slapd.log}"
+  local -r PIDFILE="${SLAPD_INIT_PIDFILE:-$INIT_STATE_DIR/slapd.pid}"
   local -r URLS="ldap:/// ldapi:///${SLAPD_EXTRA_URLS:-}"
   local -a dbg_opts=()
 
@@ -156,6 +160,7 @@ function slapd() {
       mkdir -p "$RUNDIR"
       chown openldap:openldap "$RUNDIR"
       chmod 770 "$RUNDIR"
+      install -d -o root -g root -m 0700 "$INIT_STATE_DIR"
 
       # truncate previous log
       : > "$LOGFILE"

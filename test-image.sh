@@ -218,6 +218,14 @@ docker exec "$container" test -s /var/lib/ldap/data.mdb
 docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
 docker exec "$container" test -d /var/lib/ldap/lost+found
 
+# Root reads the temporary log and acts on the PID, so neither may live under a
+# directory the service account can modify between entrypoint operations.
+if ! docker exec "$container" sh -c \
+   'test "$(stat -c "%U:%G:%a" /run/slapd-init)" = root:root:700 && test -s /run/slapd-init/slapd.log'; then
+   echo "Temporary slapd state is not isolated in a root-only directory." >&2
+   exit 1
+fi
+
 # Stop cleanly so the next start tests initialization state rather than MDB
 # crash recovery, then attach a new container to the same persistent volumes.
 docker stop "$container" >/dev/null
