@@ -358,6 +358,10 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     ldif modify -Y EXTERNAL /opt/ldifs/init_config_admin_access.ldif
   fi
 
+  if [[ ${LDAP_INIT_ALLOW_ANON_BIND:-true} == false ]]; then
+    ldif add -Y EXTERNAL /opt/ldifs/init_disable_bind_anon.ldif
+  fi
+
   ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
   ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
   ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif

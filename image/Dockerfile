@@ -104,7 +104,7 @@ EOF
 
 # https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
-FROM ${BASE_IMAGE} as final
+FROM ${BASE_IMAGE} AS final
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG LC_ALL=C
@@ -186,6 +186,7 @@ ENV \
   LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_ROOT_USER_PW='' \
   LDAP_INIT_ALLOW_CONFIG_ACCESS='false' \
+  LDAP_INIT_ALLOW_ANON_BIND='false' \
   LDAP_INIT_PPOLICY_DEFAULT_DN='cn=DefaultPasswordPolicy,ou=Policies,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_PPOLICY_PW_MIN_LENGTH=8 \
   LDAP_INIT_PPOLICY_MAX_FAILURES=3 \
