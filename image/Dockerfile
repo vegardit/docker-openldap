@@ -132,7 +132,7 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo "#################################################"
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections
-  apt-get install --no-install-recommends -y slapd ldap-utils
+  apt-get install --no-install-recommends -y slapd ldap-utils libsasl2-modules libsasl2-modules-gssapi-mit
   echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd
