@@ -519,14 +519,16 @@ else
 
         # Add new overlay configuration
         log INFO "Adding OpenLDAP 2.6 password policy overlay configuration..."
-        cat >/tmp/migrate_ppolicy_26.ldif <<EOF
+        # This generated LDIF is consumed once. Stdin avoids giving root a fixed
+        # pathname in /tmp that the openldap account can replace between starts.
+        if {
+          cat <<EOF
 dn: $ppolicy_dn
 changetype: modify
 add: olcPPolicyCheckModule
 olcPPolicyCheckModule: /usr/lib/ldap/pqchecker.so
 EOF
-
-        if ldapmodify -H ldapi:/// -Y EXTERNAL -f /tmp/migrate_ppolicy_26.ldif 2>&1 | log INFO; then
+        } | ldapmodify -H ldapi:/// -Y EXTERNAL 2>&1 | log INFO; then
           log INFO "Successfully migrated password policy overlay configuration"
           if [[ $has_legacy_config == true ]]; then
             log WARN "Legacy pwdCheckModule entries found in password policy entries."
@@ -537,7 +539,6 @@ EOF
           log ERROR "Failed to apply password policy overlay migration"
           exit 1
         fi
-        rm -f /tmp/migrate_ppolicy_26.ldif
       fi
     fi
 
