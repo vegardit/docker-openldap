@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
-# SPDX-FileContributor: Sebastian Thomschke
+# SPDX-FileCopyrightText: © ReproStat (https://github.com/reprostat)
+# SPDX-FileCopyrightText: based on docker-openldap by © Vegard IT GmbH (https://vegardit.com)
+# SPDX-FileContributor: Tibor Auer
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
+# SPDX-ArtifactOfProjectHomePage: https://github.com/reprostat/openldap-container
 
 # Build scripts can run outside the checkout, so resolve executable paths from
 # this file instead of trusting the caller's working directory.
@@ -17,13 +18,13 @@ source "$shared_lib/lib/build-image-init.sh"
 #################################################
 # declare image meta
 #################################################
-image_repo=${DOCKER_IMAGE_REPO:-vegardit/openldap}
+image_repo=${DOCKER_IMAGE_REPO:-reprostat/openldap-container}
 base_image=${DOCKER_BASE_IMAGE:-debian:trixie-slim}
 
 platforms="linux/amd64,linux/arm64/v8,linux/arm/v7"
 
 declare -A image_meta=(
-  [authors]="Vegard IT GmbH (vegardit.com)"
+  [authors]="ReproStat (https://github.com/reprostat)"
   [title]="$image_repo"
   [description]="Opinionated docker image built for easy deployment of an OpenLDAP 2.6 server"
   [source]="$(git config --get remote.origin.url)"

@@ -1,7 +1,8 @@
-# SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
-# SPDX-FileContributor: Sebastian Thomschke
+# SPDX-FileCopyrightText: © ReproStat (https://github.com/reprostat)
+# SPDX-FileCopyrightText: based on docker-openldap by © Vegard IT GmbH (https://vegardit.com)
+# SPDX-FileContributor: Tibor Auer
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
+# SPDX-ArtifactOfProjectHomePage: https://github.com/reprostat/openldap-container
 #
 # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 name: Build
@@ -11,8 +12,8 @@ on:  # https://docs.github.com/en/actions/reference/workflows-and-actions/events
     # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
     - cron: '0 17 * * 3'
   push:
-    branches-ignore:  # build all branches except:
-    - 'dependabot/**'  # prevent GHA triggered twice (once for commit to the branch and once for opening/syncing the PR)
+    branches:  # build only main branch, not feature branches
+    - 'main'
     tags-ignore:  # don't build tags
     - '**'
     paths-ignore:
@@ -125,7 +126,7 @@ jobs:
         if [[ $GITHUB_REF_NAME == 'main' && $GITHUB_EVENT_NAME != 'pull_request' && -z "$ACT" ]]; then
           echo "DOCKER_PUSH_GHCR=true" >> "$GITHUB_ENV"
           echo "DOCKER_PUSH_GHCR=true" >> $GITHUB_OUTPUT
-          if [[ -n "${{ secrets.DOCKER_HUB_USERNAME }}" ]]; then
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]]; then
             echo "DOCKER_PUSH=true" >> "$GITHUB_ENV"
           fi
         fi
@@ -135,8 +136,8 @@ jobs:
       if: ${{ env.DOCKER_PUSH }}
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
-        username: ${{ secrets.DOCKER_HUB_USERNAME }}
-        password: ${{ secrets.DOCKER_HUB_TOKEN }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
 
     - name: Login to ghcr.io
