@@ -176,9 +176,12 @@ function slapd() {
       local pid=$!
       echo "$pid" > "$PIDFILE"
 
-      # Wait up to 10s for readiness via ldapi:///
+      # Wait up to 10s for readiness via ldapi:///. Adding GSSAPI changes Cyrus
+      # SASL's automatic mechanism selection, so pin the local peer-credential
+      # mechanism: readiness must not require a Kerberos ticket or mistake failed
+      # authentication for an unavailable server.
       for _ in {1..20}; do
-        if ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        if ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null 2>&1; then
           log INFO "slapd started (pid $pid)"
           return 0
         fi
@@ -210,9 +213,11 @@ function slapd() {
         done
       fi
 
-      # Wait up to 10s for it to exit (ldapi should drop when slapd is gone)
+      # Wait up to 10s for it to exit (ldapi should drop when slapd is gone).
+      # Use the same explicit mechanism as readiness: a failed automatic GSSAPI
+      # bind while slapd is alive must not be interpreted as a stopped server.
       for _ in {1..20}; do
-        if ! ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        if ! ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null 2>&1; then
           log INFO "slapd stopped"
           rm -f "$PIDFILE"
           return 0

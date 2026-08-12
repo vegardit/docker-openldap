@@ -135,7 +135,17 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo "#################################################"
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections
-  apt-get install --no-install-recommends -y slapd ldap-utils
+  apt-get install --no-install-recommends -y \
+    slapd \
+    ldap-utils \
+    libsasl2-modules-gssapi-mit
+
+  # The GSSAPI package depends on the generic module bundle. Limit slapd to the
+  # two mechanisms this image supports so that PLAIN and legacy mechanisms do
+  # not become advertised merely as a packaging side effect.
+  install -d /etc/ldap/sasl2
+  printf '%s\n' 'mech_list: EXTERNAL GSSAPI' >/etc/ldap/sasl2/slapd.conf
+
   echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd

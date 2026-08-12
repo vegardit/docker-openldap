@@ -95,10 +95,13 @@ function wait_until_ready() {
 
   # Initialization starts a temporary slapd first; require the final startup
   # message plus a live socket so the intermediate service cannot satisfy this.
+  # Select EXTERNAL explicitly because GSSAPI-capable clients otherwise prefer
+  # a mechanism that requires credentials unavailable to this readiness probe.
   for _ in {1..120}; do
     container_logs=$(docker logs --since "$started_at" "$target_container" 2>&1)
     if [[ $container_logs == *"Starting OpenLDAP: slapd..."* ]] && \
-        docker exec "$target_container" ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        docker exec "$target_container" \
+          ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null 2>&1; then
       return 0
     fi
     if [[ $(docker inspect --format '{{.State.Running}}' "$target_container") != true ]]; then
@@ -217,6 +220,22 @@ docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
 docker exec "$container" test -s /var/lib/ldap/data.mdb
 docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
 docker exec "$container" test -d /var/lib/ldap/lost+found
+
+# The GSSAPI package depends on the generic SASL module bundle. Assert the
+# server-facing allowlist so that dependency cannot silently expose password or
+# legacy mechanisms and change automatic client negotiation again.
+# Docker Desktop and native pipeline tools can emit CRLF on Windows. Normalize
+# at the capture boundary so the exact policy assertion is platform-independent.
+sasl_mechanisms=$(docker exec "$container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b '' -s base '(objectClass=*)' supportedSASLMechanisms |
+  sed -n 's/^supportedSASLMechanisms: //p' |
+  sort |
+  tr -d '\015')
+if [[ $sasl_mechanisms != $'EXTERNAL\nGSSAPI' ]]; then
+  printf 'Unexpected SASL mechanisms:\n%s\n' "$sasl_mechanisms" >&2
+  exit 1
+fi
 
 # Root reads the temporary log and acts on the PID, so neither may live under a
 # directory the service account can modify between entrypoint operations.

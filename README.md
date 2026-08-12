@@ -11,6 +11,7 @@
    1. [Initial configuration](#initial-configuration)
    1. [Initial LDAP tree](#initial-ldap-tree)
    1. [Customizing the Password Policy](#ppolicy)
+   1. [Kerberos authentication (GSSAPI)](#kerberos-authentication)
    1. [Transport Encryption (LDAPS/STARTTLS)](#transport-encryption)
    1. [Syncrepl over LDAPS](#syncrepl-ldaps)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
@@ -135,6 +136,68 @@ A custom rule can be provided via an environment variable, e.g.:
 ```sh
 LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 ```
+
+### <a name="kerberos-authentication"></a>Kerberos authentication (GSSAPI)
+
+The image advertises only the `EXTERNAL` and `GSSAPI` SASL mechanisms. It
+includes the MIT Kerberos GSSAPI plugin, but it does not create or manage a
+Kerberos realm, service principal, keytab, or user-to-DN mapping.
+
+To use GSSAPI:
+
+1. Create a service principal whose hostname matches the LDAP hostname, for
+   example `ldap/ldap.example.com@EXAMPLE.COM`, and export it to a keytab.
+1. Run the container with that hostname and mount the realm configuration and
+   keytab. The keytab must remain readable by the `openldap` service user.
+
+   ```yaml
+   services:
+     openldap:
+       image: vegardit/openldap:latest
+       hostname: ldap.example.com
+       volumes:
+         - ./krb5.conf:/etc/krb5.conf:ro
+         - ./ldap.keytab:/etc/krb5.keytab:ro
+   ```
+
+   For a keytab at another location, set the standard Kerberos environment
+   variable, for example `KRB5_KTNAME=FILE:/run/secrets/ldap/ldap.keytab`.
+
+   `hostname:` sets the container's Kerberos service identity, but does not make
+   that name reachable from a client. Ensure `ldap.example.com` resolves and
+   routes to the container from the client, for example through a Compose network
+   alias or by publishing port 389 on an appropriate host interface and pointing
+   DNS there.
+1. Install the LDAP and Kerberos client tools plus a Cyrus SASL GSSAPI plugin.
+   On Debian-based clients:
+
+   ```sh
+   sudo apt-get install krb5-user ldap-utils libsasl2-modules-gssapi-mit
+   ```
+
+   The GSSAPI plugin is a separate package on Debian; `ldap-utils` and
+   `krb5-user` alone do not make GSSAPI available to `ldapwhoami`.
+1. Obtain a ticket on the client and select GSSAPI explicitly:
+
+   ```sh
+   kinit alice@EXAMPLE.COM
+   ldapwhoami -Q -Y GSSAPI -H ldap://ldap.example.com
+   ```
+
+Without an `olcAuthzRegexp`, OpenLDAP uses the authenticated SASL identity such
+as `uid=alice,cn=gssapi,cn=auth` directly. Under the image's default ACLs, this
+unmapped identity receives the same read permissions as other authenticated
+users; separately restricted attributes such as `userPassword` remain
+protected. Add a strict mapping when the identity must receive the `self`, group,
+or write permissions of an LDAP entry.
+
+Identity mapping rewrites an authenticated identity; it is not an allowlist. If
+unmapped principals must not receive the default authenticated-user permissions,
+custom ACLs must deny identities below `cn=gssapi,cn=auth` before the generic
+`by users read` clauses. See the
+[OpenLDAP SASL guide](https://www.openldap.org/doc/admin26/sasl.html) for identity
+mapping details; broad regular expressions can map a principal to the wrong LDAP
+identity.
 
 ### <a name="transport-encryption"></a>Transport Encryption (LDAPS/STARTTLS)
 
