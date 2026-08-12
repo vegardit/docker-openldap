@@ -127,7 +127,7 @@ function ldif() {
   local tmpfile
   tmpfile=$(mktemp --suffix=.ldif /tmp/ldif.XXXXXX)
   interpolate <"$file" >"$tmpfile"
-  "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
+  "ldap$action" -H ldapi:/// -Y EXTERNAL "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
   rm -f "$tmpfile"
 }
 
@@ -168,7 +168,7 @@ function slapd() {
 
       # Wait up to 10s for readiness via ldapi:///
       for _ in {1..20}; do
-        if ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        if ldapwhoami -H ldapi:/// -Y EXTERNAL >/dev/null 2>&1; then
           log INFO "slapd started (pid $pid)"
           return 0
         fi
@@ -202,7 +202,7 @@ function slapd() {
 
       # Wait up to 10s for it to exit (ldapi should drop when slapd is gone)
       for _ in {1..20}; do
-        if ! ldapwhoami -H ldapi:/// >/dev/null 2>&1; then
+        if ! ldapwhoami -H ldapi:/// -Y EXTERNAL >/dev/null 2>&1; then
           log INFO "slapd stopped"
           rm -f "$PIDFILE"
           return 0
