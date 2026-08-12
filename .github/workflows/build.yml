@@ -42,7 +42,7 @@ defaults:
 
 
 env:
-  DOCKER_REPO_NAME: openldap
+  DOCKER_REPO_NAME: ${{ github.event.repository.name }}
   TRIVY_CACHE_DIR: ~/.trivy/cache
 
 
