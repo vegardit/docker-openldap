@@ -208,7 +208,9 @@ function wait_for_replica_entry() {
 }
 
 create_fresh_volumes
-start_container
+# RFC2307bis is opt-in, so exercise its generated slapadd input here. Later
+# fresh replication fixtures retain default-schema coverage.
+start_container --env LDAP_INIT_RFC2307BIS_SCHEMA=1
 
 wait_until_ready
 docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif

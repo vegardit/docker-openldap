@@ -416,20 +416,24 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     log INFO "Delete initial slapd config..."
     find /etc/ldap/slapd.d/ -type f -delete
 
-    log INFO "Create modified sldapd config file..."
-    {
-       # create ldif file where "{2}nis,cn=schema,cn=config" schema is replaced by "{2}rfc2307bis,cn=schema,cn=config"
-       # 1. add all schema entries before "dn: cn={2}nis,cn=schema,cn=config" from initial config to new config file
+    log INFO "Create modified sldapd config..."
+    # Build the LDIF in memory before slapadd starts: this removes the fixed /tmp
+    # path and avoids Bash hiding a failed transform in a live pipeline.
+    config_ldif=$(
+       # Command substitutions clear errexit by default.
+       set -e
+       # Preserve the persisted schema indexes around the replaced {2} record.
        echo "${initial_sldapd_config%%dn: cn=\{2\}nis,cn=schema,cn=config*}"
-       # 2. add "dn: cn={2}rfc2307bis,cn=schema,cn=config" entry
        sed 's/rfc2307bis/{2}rfc2307bis/g' /opt/ldifs/schema_rfc2307bis02.ldif
-       echo # add empty new line
-       # 3. add entry "dn: cn={3}inetorgperson,cn=schema,cn=config" and following entries from initial config to new config file
+       # End the replacement record before appending the retained suffix.
+       echo
        echo "dn: cn={3}inetorgperson,cn=schema,cn=config${initial_sldapd_config#*dn: cn=\{3\}inetorgperson,cn=schema,cn=config}"
-    } >/tmp/config.ldif
+    )
 
     log INFO "Register modified slapd config with RFC2307bis schema..."
-    slapadd -F /etc/ldap/slapd.d -n 0 -l /tmp/config.ldif | log INFO
+    # Command substitution strips trailing newlines; restore one for LDIF.
+    printf '%s\n' "$config_ldif" |
+       slapadd -F /etc/ldap/slapd.d -n 0 | log INFO
     chown openldap:openldap -R /etc/ldap/slapd.d
   fi
 
