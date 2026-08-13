@@ -476,6 +476,18 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
 
+  if [[ -d /opt/ldifs/custom_schema ]]; then
+    log INFO "Loading custom schema from /opt/ldifs/custom_schema..."
+
+    # The order of schema loading is not important because each schema is independent
+    for schema_ldif in /opt/ldifs/custom_schema/*.ldif; do
+      # Volume projections can expose regular files through symlinks; -f
+      # accepts those while excluding directories and special files.
+      [[ -f $schema_ldif ]] || continue
+      ldif add -Y EXTERNAL "$schema_ldif"
+    done
+  fi
+
   ldif modify -Y EXTERNAL /opt/ldifs/init_frontend.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/init_module_memberof.ldif
   ldif modify -Y EXTERNAL /opt/ldifs/init_mdb.ldif

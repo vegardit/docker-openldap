@@ -109,22 +109,24 @@ You can mount a custom file at that path if you need changes.
 
 #### Additional initialization LDIFs
 
-To add directory data without replacing the image's LDIFs, mount a directory at `/opt/ldifs/custom`:
+To add directory data without replacing the image's LDIFs, mount a directory at `/opt/ldifs/custom_schema` for schemas or `/opt/ldifs/custom` for domain LDIFs:
 
 ```sh
 docker run -itd \
   -e LDAP_INIT_ROOT_USER_PW='newpassword' \
   -e CUSTOM_ENTRY_NAME='service-account' \
+  -v /path/on/docker/host/schema_ldifs:/opt/ldifs/custom_schema:ro \
   -v /path/on/docker/host/ldifs:/opt/ldifs/custom:ro \
   vegardit/openldap
 ```
 
 When the image initializes clean configuration and data volumes for the first time, it loads every non-hidden `*.ldif` file directly inside this directory.
-Files are loaded after the built-in tree, password policy, entries, and replication provider account, and before the initial backup.
-Filenames are sorted byte by byte in the C locale rather than in natural numeric order, so `10.ldif` precedes `2.ldif`.
+Schema LDIFs are loaded before the built-in tree, password policy, entries, and replication provider account, while domain LDIFs are loaded afterwards 
+and before the initial backup. The order of schema LDIFs are not important because they are assumed to be indepenedent; however, 
+the domain LDIFs are sorted byte by byte in the C locale rather than in natural numeric order, so `10.ldif` precedes `2.ldif`.
 Use fixed-width prefixes such as `10-groups.ldif` and `20-users.ldif` when one file depends on another.
 
-Replication consumers do not load custom LDIFs because syncrepl supplies their directory data.
+Replication consumers also load the schema LDIFs, but do not load domain LDIFs because syncrepl supplies their directory data.
 Restarts and replacement containers that reuse initialized volumes do not load them again.
 
 Each file supports the same `${NAME}` placeholders as the image's built-in LDIFs.
@@ -132,8 +134,10 @@ Values can come from container environment variables or values calculated during
 An undefined placeholder stops initialization.
 The image processes each file with `ldapmodify -a`: records without `changetype` are added, while explicit RFC 2849 change records use the operation they specify.
 
-Use this directory for entries below the configured organization DN.
-Do not use it to change `cn=config`, add schemas, or load modules.
+Important: Use the `/opt/ldifs/custom_schema` for to change `cn=config`, add schemas, or load modules and
+the `/opt/ldifs/custom` directory for entries below the configured organization DN;
+and never the other way around because it may lead to corrupt database.
+
 Changes are not transactional: if one file fails, changes made by earlier files remain.
 Fix the file and retry with clean configuration and data volumes.
 
