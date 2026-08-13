@@ -221,6 +221,33 @@ docker exec "$container" test -s /var/lib/ldap/data.mdb
 docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
 docker exec "$container" test -d /var/lib/ldap/lost+found
 
+# Anonymous Root DSE access is intentional: clients need it to discover server
+# capabilities before choosing how to bind. It must not extend to directory data.
+anonymous_root_dse=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -b '' -s base '(objectClass=*)' namingContexts)
+if [[ $anonymous_root_dse != *'namingContexts:'* ]]; then
+  echo "Anonymous clients cannot discover the naming context via the Root DSE." >&2
+  exit 1
+fi
+
+# ACLs may hide the base with either an empty result or an LDAP error. Only
+# returned entry data violates the policy, so tolerate the status and inspect LDIF.
+anonymous_directory_output=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -b 'DC=example,DC=com' -s base '(objectClass=*)' 1.1 2>/dev/null || true)
+if [[ $anonymous_directory_output == *'dn: '* ]]; then
+  echo "Anonymous clients can read the organization entry." >&2
+  exit 1
+fi
+
+# Prove the same entry is readable after bind, so an unavailable directory cannot
+# make the anonymous denial check pass accidentally.
+docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -D "$root_dn" -w "$root_password" \
+    -b 'DC=example,DC=com' -s base '(objectClass=*)' 1.1 >/dev/null
+
 # The GSSAPI package depends on the generic SASL module bundle. Assert the
 # server-facing allowlist so that dependency cannot silently expose password or
 # legacy mechanisms and change automatic client negotiation again.
@@ -291,9 +318,61 @@ if [[ $failure_logs == *"Starting slapd for init/migration..."* ]]; then
 fi
 
 docker rm "$container" >/dev/null
-start_container
+# An explicit empty value is different from an omitted variable. Reject it so
+# an empty Compose or env-file substitution cannot silently retain anonymous access.
+start_container --env LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE=
+for _ in {1..120}; do
+  if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ $(docker inspect --format '{{.State.Running}}' "$container") == true ]]; then
+  docker logs "$container" >&2
+  echo "Empty LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE did not stop the container." >&2
+  exit 1
+fi
+
+failure_logs=$(docker logs "$container" 2>&1)
+if [[ $(docker inspect --format '{{.State.ExitCode}}' "$container") == 0 ]] || \
+    [[ $failure_logs != *"LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE must be true|false"* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "Empty LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE did not report the expected failure." >&2
+  exit 1
+fi
+# Validation must precede the non-idempotent LDAP changes so these volumes remain
+# safe for the corrected retry below.
+if [[ $failure_logs == *"Starting slapd for init/migration..."* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "LDAP initialization started before Root DSE policy validation completed." >&2
+  exit 1
+fi
+
+docker rm "$container" >/dev/null
+start_container --env LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE=false
 wait_until_ready
 docker exec "$container" test -f /etc/ldap/slapd.d/initialized
+
+# The opt-out changes only Root DSE visibility. LDAP servers may hide a denied
+# base with an empty result or an error, so inspect returned data instead of status.
+anonymous_root_dse=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -b '' -s base '(objectClass=*)' namingContexts 2>/dev/null || true)
+if [[ $anonymous_root_dse == *'namingContexts:'* ]]; then
+  echo "LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE=false still exposes Root DSE data anonymously." >&2
+  exit 1
+fi
+
+# Prove the option did not remove the `auth` privilege needed to establish an
+# identity and that the same Root DSE remains visible after a password bind.
+authenticated_root_dse=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -D 'uid=employee1,ou=Internal,ou=Users,DC=example,DC=com' -w changeit \
+    -b '' -s base '(objectClass=*)' namingContexts)
+if [[ $authenticated_root_dse != *'namingContexts:'* ]]; then
+  echo "Authenticated clients cannot read the Root DSE after anonymous access is disabled." >&2
+  exit 1
+fi
 
 # entryCSN and entryUUID support syncrepl searches but add write and storage cost
 # to every database entry, so ordinary deployments must not inherit them.

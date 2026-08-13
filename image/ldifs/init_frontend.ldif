@@ -10,3 +10,12 @@ olcPasswordHash: {SSHA}
 # maximum number of seconds (in real time) slapd will spend answering a search request
 replace: olcTimeLimit
 olcTimeLimit: 60
+-
+# Debian grants Root DSE reads in the frontend, before backend ACLs are considered.
+# Replace only that seeded value so peer-credential admin and Subschema ACLs remain intact.
+delete: olcAccess
+olcAccess: {1}to dn.exact="" by * read
+-
+add: olcAccess
+olcAccess: {1}to dn.exact=""
+  ${LDAP_INIT_ROOT_DSE_ACCESS}

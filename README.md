@@ -37,6 +37,12 @@ Automatically rebuilt **weekly** to include the latest OS security fixes.
 Various parts of the LDAP server can be configured via environment variables. All environment variables starting with `LDAP_INIT_`
 are only evaluated on the **first** container launch. Changing their values later has no effect when restarting or updating the container.
 
+The generated ACLs allow anonymous clients to query the Root DSE for server capabilities, but not to read directory entries.
+Directory ACLs retain anonymous `auth` access only so clients can bind and establish an identity.
+Set `LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE=false` on the first launch to restrict Root DSE reads to authenticated clients. This does not
+remove anonymous `auth` access because slapd needs that ACL privilege to verify credentials during a bind. Clients that use Root DSE
+data to choose an authentication mechanism must have that mechanism configured explicitly in this mode.
+
 To customize the **initial** configuration you can set the following environment variables:
 
 ```sh
@@ -49,6 +55,7 @@ LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}'
 LDAP_INIT_ROOT_USER_PW='changeit'
 LDAP_INIT_RFC2307BIS_SCHEMA=0 # 0=use NIS (RFC2307) schema, 1=use RFC2307bis schema
 LDAP_INIT_ALLOW_CONFIG_ACCESS='true' # if set to true, the "cn=config" namespace can be read/edited by LDAP admins
+LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE='true' # if set to false, authentication is required to query the Root DSE
 ```
 
 Environment variables can for example be set in one of the following ways:

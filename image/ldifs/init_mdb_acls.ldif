@@ -8,13 +8,11 @@ changetype: modify
 # configure ACLs
 ########################
 replace: olcAccess
-# This ACL gives incoming connections the ability to read the rootDSE.
-# It is important to allow this, as clients may need to obtain information from the base level (such as your supported SASL Mechanisms).
-# The ".base" portion of the ACL restricts clients to querying only the top level
+# The frontend ACL determines effective Root DSE visibility before slapd reaches
+# this backend. Keep this rule first because provider bootstrap inserts its
+# replication access rule at {1}, ahead of the attribute restrictions below.
 olcAccess: {0}to dn.base=""
   by * read
-# Provider bootstrap later inserts its replication identity at {1}; keep the
-# rootDSE rule first so replication access precedes attribute restrictions.
 olcAccess: {1}to attrs=shadowLastChange
   by self write
   by users read

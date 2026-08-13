@@ -329,6 +329,19 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     exit 1
   fi
 
+  # This switch controls capability discovery only. MDB ACLs must keep anonymous
+  # `auth` access so slapd can verify credentials during a normal bind.
+  # Default only when unset; an explicit empty value must fail validation rather
+  # than silently selecting the anonymous-access policy.
+  # shellcheck disable=SC2034  # Referenced in init_frontend.ldif.
+  case "${LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE-true}" in
+    true) LDAP_INIT_ROOT_DSE_ACCESS='by * read' ;;
+    # The final deny stops unmatched anonymous requests from falling through the
+    # frontend ACL chain to a later/default read rule.
+    false) LDAP_INIT_ROOT_DSE_ACCESS='by users read by * none' ;;
+    *) log ERROR "LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE must be true|false"; exit 1 ;;
+  esac
+
   replication_role=${LDAP_INIT_REPLICATION_ROLE:-}
   case "$replication_role" in
     '')
