@@ -434,8 +434,16 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
       ;;
   esac
 
-  # Consumers never read this path. On writers, reject a mistaken file mount
-  # before schema or LDAP changes make the same volumes unsafe to retry.
+  # Schemas are local cn=config state on every node, including consumers. Reject
+  # a mistaken file mount before schema or LDAP changes make the volumes unsafe
+  # to retry with a corrected mount.
+  if [[ -e /opt/ldifs/custom-schema && ! -d /opt/ldifs/custom-schema ]]; then
+    log ERROR "[/opt/ldifs/custom-schema] must be a directory"
+    exit 1
+  fi
+
+  # Consumers never read custom directory data. On writers, validate its mount
+  # at the same early boundary as the schema directory.
   if [[ $replication_role != consumer && -e /opt/ldifs/custom && ! -d /opt/ldifs/custom ]]; then
     log ERROR "[/opt/ldifs/custom] must be a directory"
     exit 1
@@ -476,6 +484,36 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
 
+  if [[ -d /opt/ldifs/custom-schema ]]; then
+    (
+      # INIT_SH_FILE is sourced into this shell and may alter pathname
+      # expansion. Keep the public file-selection contract stable and contain
+      # these overrides in a subshell.
+      unset GLOBIGNORE
+      set +f
+      shopt -u dotglob failglob nocaseglob
+      # Keep the locale override local to this loader's bytewise glob ordering.
+      # shellcheck disable=SC2030
+      export LC_ALL=C
+      shopt -s nullglob
+
+      # cn=config is not replicated, so every node must install compatible
+      # schemas locally before database configuration and directory data load.
+      for schema_ldif in /opt/ldifs/custom-schema/*.ldif; do
+        # Volume projections may expose regular files through symlinks. Accept
+        # those while excluding directories and special files.
+        [[ -f $schema_ldif ]] || continue
+        # Mounted schema LDIFs are trusted operator configuration. Parsing them
+        # would not create a security boundary because SASL EXTERNAL already has
+        # authority over cn=config. ldapadd also lets slapd assign omitted {N}
+        # schema indexes instead of making the image rewrite caller-owned LDIF.
+        # The shared helper resolves placeholders. Keep failures fatal because
+        # later schemas may depend on this one and initialization is not atomic.
+        ldif add -Y EXTERNAL "$schema_ldif"
+      done
+    )
+  fi
+
   ldif modify -Y EXTERNAL /opt/ldifs/init_frontend.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/init_module_memberof.ldif
   ldif modify -Y EXTERNAL /opt/ldifs/init_mdb.ldif
@@ -514,6 +552,8 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
         unset GLOBIGNORE
         set +f
         shopt -u dotglob failglob nocaseglob
+        # Reset the locale locally again; no state should leak between loaders.
+        # shellcheck disable=SC2031
         export LC_ALL=C
         shopt -s nullglob
 

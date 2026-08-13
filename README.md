@@ -9,6 +9,7 @@
 1. [What is it?](#what-is-it)
 1. [Configuration](#configuration)
    1. [Initial configuration](#initial-configuration)
+   1. [Additional schemas](#additional-schemas)
    1. [Initial LDAP tree](#initial-ldap-tree)
    1. [Customizing the Password Policy](#ppolicy)
    1. [Kerberos authentication (GSSAPI)](#kerberos-authentication)
@@ -98,6 +99,46 @@ Environment variables can for example be set in one of the following ways:
      -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro \
      vegardit/openldap
    ```
+
+#### Supported initialization mounts
+
+These are the supported mounts for bootstrap customization. Persistent volumes, TLS files, and replication secrets are described in their own sections.
+
+| Container target | Purpose | When it is used |
+|---|---|---|
+| Path set by `INIT_SH_FILE` | Source a shell script that can set image variables | Every container start, before configuration checks |
+| `/opt/ldifs/custom-schema/` | Add dynamic-configuration schema LDIFs | First initialization, on every node |
+| `/opt/ldifs/custom/` | Add directory data LDIFs | First initialization, except on replication consumers |
+| `/opt/ldifs/init_org_tree.ldif` | Replace the initial organization tree | First initialization, except on replication consumers |
+| `/opt/ldifs/init_org_entries.ldif` | Replace the initial users and groups | First initialization, except on replication consumers |
+| `/opt/ldifs/init_org_ppolicy.ldif` | Replace the initial password policy | First initialization, except on replication consumers |
+| `/opt/ldifs/init_mdb_indexes.ldif` | Replace the MDB index settings | First initialization, on every node |
+
+### <a name="additional-schemas"></a>Additional schemas
+
+To add application schemas without replacing the image's built-in files, mount a directory at `/opt/ldifs/custom-schema`:
+
+```sh
+docker run -itd \
+  -e LDAP_INIT_ROOT_USER_PW='newpassword' \
+  -v /path/on/docker/host/schemas:/opt/ldifs/custom-schema:ro \
+  vegardit/openldap
+```
+
+On the first initialization of new volumes, the image loads every non-hidden `*.ldif` file directly inside this directory.
+It loads them after the built-in sudo and OpenSSH schemas, and before database settings or directory data.
+Standalone servers, replication providers, and replication consumers all load the schemas because `cn=config` is local to each node.
+Restarts and replacement containers that reuse initialized volumes do not load them again.
+
+Filenames are sorted byte by byte in the C locale, not in natural numeric order, so `10.ldif` comes before `2.ldif`.
+Use fixed-width prefixes such as `10-guacamole.ldif` and `20-kerberos.ldif` when one schema depends on another.
+Each file supports the same `${NAME}` placeholders as the image's built-in LDIFs; an undefined placeholder stops initialization.
+
+Provide schemas as `cn=config` LDIF files. Leave the index out of schema DNs, for example `cn=my-schema,cn=schema,cn=config`, so OpenLDAP can assign its internal `{N}` index.
+Older `.schema` files must be converted to LDIF first. Modules and overlays need separate configuration.
+
+Only mount files you trust. The loader uses local SASL EXTERNAL access, which can change all of `cn=config`; it does not inspect each LDIF to ensure it contains only schema entries.
+Changes are not transactional: if one file fails, changes made by earlier files remain. Fix the file and retry with clean configuration and data volumes.
 
 ### <a name="initial-ldap-tree"></a>Initial LDAP tree
 

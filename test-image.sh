@@ -25,12 +25,16 @@ replication_secret_dir="$test_dir/secrets"
 # docker cp preserves this basename under /opt/ldifs, so it must match the
 # public container path rather than a descriptive test-only directory name.
 custom_ldif_dir="$test_dir/custom"
+custom_schema_ldif_dir="$test_dir/custom-schema"
+invalid_schema_path_file="$test_dir/custom-schema-file"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
 docker_ca_file="$tls_dir/ca.crt"
 docker_cert_file="$tls_dir/server.crt"
 docker_key_file="$tls_dir/server.key"
 docker_replication_secret_dir="$replication_secret_dir"
 docker_custom_ldif_dir="$custom_ldif_dir"
+docker_custom_schema_ldif_dir="$custom_schema_ldif_dir"
+docker_invalid_schema_path_file="$invalid_schema_path_file"
 root_dn='uid=admin,DC=example,DC=com'
 root_password='test-only-password'
 custom_entry_dn='cn=custom-entry,ou=Custom,DC=example,DC=com'
@@ -51,6 +55,8 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_key_file=$(cygpath -w "$docker_key_file")
   docker_replication_secret_dir=$(cygpath -w "$docker_replication_secret_dir")
   docker_custom_ldif_dir=$(cygpath -w "$docker_custom_ldif_dir")
+  docker_custom_schema_ldif_dir=$(cygpath -w "$docker_custom_schema_ldif_dir")
+  docker_invalid_schema_path_file=$(cygpath -w "$docker_invalid_schema_path_file")
 fi
 
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
@@ -79,11 +85,11 @@ function create_fresh_volumes() {
 }
 
 function start_container() {
-  local copy_custom_ldifs=false
-  if [[ ${1:-} == --custom-ldifs ]]; then
-    copy_custom_ldifs=true
-    shift
-  fi
+  local fixture_mode=${1:-}
+  case "$fixture_mode" in
+    --bootstrap-ldifs|--schema-path-file) shift ;;
+    *) fixture_mode= ;;
+  esac
 
   docker create --name "$container" \
     --env LDAP_BACKUP_TIME= \
@@ -93,11 +99,17 @@ function start_container() {
     --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
     "$image_name" >/dev/null
 
-  if [[ $copy_custom_ldifs == true ]]; then
-    # act's nested Docker daemon cannot resolve runner-local bind paths. Copying
-    # before start exercises the same container path on every supported runner.
-    docker cp "$docker_custom_ldif_dir" "$container:/opt/ldifs/"
-  fi
+  # act's nested Docker daemon cannot resolve runner-local bind paths. Copying
+  # before start exercises the same container paths on every supported runner.
+  case "$fixture_mode" in
+    --bootstrap-ldifs)
+      docker cp "$docker_custom_ldif_dir" "$container:/opt/ldifs/"
+      docker cp "$docker_custom_schema_ldif_dir" "$container:/opt/ldifs/"
+      ;;
+    --schema-path-file)
+      docker cp "$docker_invalid_schema_path_file" "$container:/opt/ldifs/custom-schema"
+      ;;
+  esac
   docker start "$container" >/dev/null
 }
 
@@ -179,6 +191,7 @@ function start_replication_node() {
     --network-alias "${network_alias}-cn-only" \
     --env LDAP_BACKUP_TIME="$backup_time" \
     --env LDAP_INIT_ROOT_USER_PW="$root_password" \
+    --env CUSTOM_SCHEMA_ATTRIBUTE_NAME=customBootstrapValue \
     "${replication_options[@]}" \
     "${tls_ca_options[@]}" \
     --env LDAP_TLS_CERT_FILE=/opt/test-server.crt \
@@ -199,6 +212,9 @@ function start_replication_node() {
     # Copy the directory because /run/secrets does not exist in a merely created
     # container. The image must discover the conventional secret path itself.
     docker cp "$docker_replication_secret_dir" "$node:/run/"
+    # cn=config is local state, not syncrepl data. Every new node needs the same
+    # custom schemas before it can accept entries that use them.
+    docker cp "$docker_custom_schema_ldif_dir" "$node:/opt/ldifs/"
   fi
   if [[ $role == consumer ]]; then
     # The fixture contains an unresolved placeholder on this node. A consumer
@@ -234,7 +250,32 @@ function wait_for_replica_entry() {
   return 1
 }
 
-mkdir "$custom_ldif_dir"
+mkdir "$custom_ldif_dir" "$custom_schema_ldif_dir"
+printf 'not a directory\n' >"$invalid_schema_path_file"
+
+# The second schema uses the attribute from the first. Their deliberately
+# non-padded names prove that the loader uses documented bytewise ordering.
+cat >"$custom_schema_ldif_dir/10-attribute.ldif" <<'LDIF'
+dn: cn=custom-bootstrap-attribute,cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: custom-bootstrap-attribute
+olcAttributeTypes: ( 1.3.6.1.4.1.55555.1.1 NAME '${CUSTOM_SCHEMA_ATTRIBUTE_NAME}' DESC 'Custom bootstrap test value' EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )
+LDIF
+cat >"$custom_schema_ldif_dir/2-objectclass.ldif" <<'LDIF'
+dn: cn=custom-bootstrap-objectclass,cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: custom-bootstrap-objectclass
+olcObjectClasses: ( 1.3.6.1.4.1.55555.1.2 NAME 'customBootstrapEntry' SUP top AUXILIARY MAY ( customBootstrapValue ) )
+LDIF
+# The sourced init script below enables dotglob. This unresolved placeholder
+# makes accidental loading of the hidden schema fail instead of passing unseen.
+cat >"$custom_schema_ldif_dir/.must-not-load.ldif" <<'LDIF'
+dn: cn=hidden-custom-bootstrap,cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: hidden-custom-bootstrap
+olcAttributeTypes: ( 1.3.6.1.4.1.55555.1.3 NAME '${UNDEFINED_HIDDEN_SCHEMA_ATTRIBUTE}' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )
+LDIF
+
 # The visible modification depends on the visible add and uses an explicit change
 # record. Together they cover bytewise ordering, default-add behavior, and interpolation.
 cat >"$custom_ldif_dir/.init.sh" <<'SH'
@@ -257,8 +298,10 @@ ou: Custom
 dn: cn=${CUSTOM_ENTRY_CN},ou=Custom,${LDAP_INIT_ORG_DN}
 objectClass: top
 objectClass: organizationalRole
+objectClass: customBootstrapEntry
 cn: ${CUSTOM_ENTRY_CN}
 description: value-before-ordered-modify
+${CUSTOM_SCHEMA_ATTRIBUTE_NAME}: schema-loaded-before-data
 LDIF
 # The non-padded "2" is intentional: C-locale bytewise order must place "10"
 # first, while natural numeric ordering would attempt this modification too soon.
@@ -273,10 +316,11 @@ create_fresh_volumes
 # RFC2307bis is opt-in, so exercise its generated slapadd input here. Later
 # fresh replication fixtures retain default-schema coverage.
 start_container \
-  --custom-ldifs \
+  --bootstrap-ldifs \
   --env INIT_SH_FILE=/opt/ldifs/custom/.init.sh \
   --env LDAP_INIT_RFC2307BIS_SCHEMA=1 \
-  --env CUSTOM_ENTRY_CN=custom-entry
+  --env CUSTOM_ENTRY_CN=custom-entry \
+  --env CUSTOM_SCHEMA_ATTRIBUTE_NAME=customBootstrapValue
 
 wait_until_ready
 docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
@@ -287,10 +331,11 @@ docker exec "$container" test -d /var/lib/ldap/lost+found
 custom_entry=$(docker exec "$container" \
   ldapsearch -LLL -x -H ldap://127.0.0.1 \
     -D "$root_dn" -w "$root_password" \
-    -b "$custom_entry_dn" -s base '(objectClass=*)' description)
-if [[ $custom_entry != *'description: loaded-in-filename-order'* ]]; then
+    -b "$custom_entry_dn" -s base '(objectClass=*)' description customBootstrapValue)
+if [[ $custom_entry != *'description: loaded-in-filename-order'* ||
+      $custom_entry != *'customBootstrapValue: schema-loaded-before-data'* ]]; then
   printf '%s\n' "$custom_entry" >&2
-  echo "Custom initialization LDIFs were not interpolated and loaded in order." >&2
+  echo "Custom schema and data LDIFs were not interpolated and loaded in order." >&2
   exit 1
 fi
 
@@ -374,6 +419,35 @@ docker rm "$container" >/dev/null
 docker volume rm "$config_volume" "$data_volume" >/dev/null
 create_fresh_volumes
 
+# A file mounted at the public directory path is almost always a Compose typo.
+# Reject it before slapd starts so the same volumes remain safe for a corrected retry.
+start_container --schema-path-file
+for _ in {1..120}; do
+  if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ $(docker inspect --format '{{.State.Running}}' "$container") == true ]]; then
+  docker logs "$container" >&2
+  echo "A non-directory custom schema path did not stop the container." >&2
+  exit 1
+fi
+
+failure_logs=$(docker logs "$container" 2>&1)
+if [[ $(docker inspect --format '{{.State.ExitCode}}' "$container") == 0 ]] || \
+    [[ $failure_logs != *"[/opt/ldifs/custom-schema] must be a directory"* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "A non-directory custom schema path did not report the expected failure." >&2
+  exit 1
+fi
+if [[ $failure_logs == *"Starting slapd for init/migration..."* ]]; then
+  printf '%s\n' "$failure_logs" >&2
+  echo "LDAP initialization started before custom schema path validation completed." >&2
+  exit 1
+fi
+
+docker rm "$container" >/dev/null
 # A bad organization DN must fail before non-idempotent LDAP changes, leaving
 # the seeded volumes safe for a corrected retry.
 start_container --env LDAP_INIT_ORG_DN=invalid
@@ -520,6 +594,23 @@ start_replication_node \
   "$consumer_container" consumer "$consumer_config_volume" "$consumer_data_volume" \
   consumer ldaps://provider "$docker_ca_file" "$consumer_backup_time"
 wait_until_ready "$consumer_container"
+
+# Syncrepl's default schema checking can accept replicated attributes without a
+# local definition. Query cn=config before the provider starts so replication
+# cannot mask a missing bootstrap step. Match definition text rather than DNs
+# because slapd adds runtime-dependent {N} indexes; disable wrapping so the
+# substring assertions stay stable.
+consumer_custom_schema=$(docker exec "$consumer_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=schema,cn=config' -s one '(objectClass=olcSchemaConfig)' \
+    olcAttributeTypes olcObjectClasses)
+if [[ $consumer_custom_schema != *"NAME 'customBootstrapValue'"* ||
+      $consumer_custom_schema != *"NAME 'customBootstrapEntry'"* ]]; then
+  printf '%s\n' "$consumer_custom_schema" >&2
+  echo "The replication consumer did not load both custom schema definitions." >&2
+  exit 1
+fi
+
 # The provider is deliberately still offline, so either the initialization path
 # or the scheduled worker would create an empty or partial, misleading export.
 if docker exec "$consumer_container" test -e /var/lib/ldap/data.ldif; then
@@ -605,7 +696,9 @@ sn: Member
 dn: cn=replication-before-restart,DC=example,DC=com
 objectClass: top
 objectClass: organizationalRole
+objectClass: customBootstrapEntry
 cn: replication-before-restart
+customBootstrapValue: replicated-through-custom-schema
 LDIF
 
 # Small fixtures cannot expose the quadratic behavior caused by missing indexes,
@@ -655,6 +748,22 @@ fi
 wait_for_replica_entry 'cn=replication-before-restart,DC=example,DC=com'
 wait_for_replica_entry "$replication_group_dn"
 wait_for_replica_entry "$replication_member_dn"
+
+# The local cn=config assertion above covers consumer bootstrap. This separate
+# directory search proves syncrepl delivered a value that uses the custom schema.
+replicated_custom_entry=$(docker exec \
+  --env LDAPTLS_CACERT=/etc/ldap/certs/ca.crt \
+  --env LDAPTLS_REQCERT=demand \
+  "$consumer_container" \
+  ldapsearch -LLL -x -H ldaps://consumer \
+    -D "$root_dn" -w "$root_password" \
+    -b 'cn=replication-before-restart,DC=example,DC=com' -s base \
+    '(objectClass=*)' customBootstrapValue)
+if [[ $replicated_custom_entry != *'customBootstrapValue: replicated-through-custom-schema'* ]]; then
+  printf '%s\n' "$replicated_custom_entry" >&2
+  echo "The consumer did not expose the replicated custom attribute." >&2
+  exit 1
+fi
 
 # The backup worker sleeps while the provider is unavailable. Require its
 # explicit transition after refresh so a fix cannot suppress consumer backups
