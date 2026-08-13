@@ -468,9 +468,6 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     ldif add -Y EXTERNAL /opt/ldifs/init_disable_bind_anon.ldif
   fi
 
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
-  ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
   if [[ $replication_role == provider ]]; then
     ldif add -Y EXTERNAL /opt/ldifs/init_replication_provider_config.ldif
   fi
