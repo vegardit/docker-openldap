@@ -106,7 +106,7 @@ EOF
 
 # https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
 # hadolint ignore=DL3006
-FROM ${BASE_IMAGE} as final
+FROM ${BASE_IMAGE} AS final
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG LC_ALL=C
