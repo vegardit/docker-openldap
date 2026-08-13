@@ -128,12 +128,16 @@ function ldif() {
   local action=$1 && shift
   local file=${!#}
   log INFO "Executing [ldap$action $file]..."
-  # shellcheck disable=SC2094  # Make sure not to read and write the same file in the same pipeline
   local tmpfile
   tmpfile=$(mktemp --suffix=.ldif /tmp/ldif.XXXXXX)
-  interpolate <"$file" >"$tmpfile"
-  "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
-  rm -f "$tmpfile"
+  (
+    # Interpolated LDIFs can contain resolved passwords. Keep cleanup in an EXIT
+    # trap so interpolation errors and LDAP client failures cannot leave that
+    # temporary copy behind. The subshell contains the trap to this invocation.
+    trap 'rm -f "$tmpfile"' EXIT
+    interpolate <"$file" >"$tmpfile"
+    "ldap$action" -H ldapi:/// "${@:1:${#}-1}" -f "$tmpfile" 2>&1 | log INFO
+  )
 }
 
 function slapd() {
@@ -430,6 +434,13 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
       ;;
   esac
 
+  # Consumers never read this path. On writers, reject a mistaken file mount
+  # before schema or LDAP changes make the same volumes unsafe to retry.
+  if [[ $replication_role != consumer && -e /opt/ldifs/custom && ! -d /opt/ldifs/custom ]]; then
+    log ERROR "[/opt/ldifs/custom] must be a directory"
+    exit 1
+  fi
+
   if [[ ${LDAP_INIT_RFC2307BIS_SCHEMA:-} == 1 ]]; then
     log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
@@ -492,6 +503,37 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
     if [[ $replication_role == provider ]]; then
       ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_replication_provider_account.ldif
+    fi
+
+    if [[ -d /opt/ldifs/custom ]]; then
+      (
+        # INIT_SH_FILE is sourced into this shell and may alter pathname
+        # expansion. Reset every setting that can disable the glob or widen it
+        # to hidden or case-insensitive names so the documented selection stays
+        # stable; the subshell keeps these overrides local to this loader.
+        unset GLOBIGNORE
+        set +f
+        shopt -u dotglob failglob nocaseglob
+        export LC_ALL=C
+        shopt -s nullglob
+
+        # Custom records run after image-owned data so they can refer to or
+        # explicitly modify it. Consumers skip this entire branch because
+        # syncrepl must remain the sole owner of their replicated suffix.
+        for custom_ldif in /opt/ldifs/custom/*.ldif; do
+          # Volume projections can expose regular files through symlinks; -f
+          # accepts those while excluding directories and special files.
+          [[ -f $custom_ldif ]] || continue
+          # -a gives records without changetype add semantics while explicit
+          # RFC 2849 change records retain their declared operation.
+          # Do not continue after an error: later files may depend on this one,
+          # and the initialized marker must remain unwritten after partial work.
+          ldif modify -a -x \
+            -D "$LDAP_INIT_ROOT_USER_DN" \
+            -w "$LDAP_INIT_ROOT_USER_PW" \
+            "$custom_ldif"
+        done
+      )
     fi
   fi
 
