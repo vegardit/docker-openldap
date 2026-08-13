@@ -13,6 +13,8 @@ replace: olcAccess
 # The ".base" portion of the ACL restricts clients to querying only the top level
 olcAccess: {0}to dn.base=""
   by * read
+# Provider bootstrap later inserts its replication identity at {1}; keep the
+# rootDSE rule first so replication access precedes attribute restrictions.
 olcAccess: {1}to attrs=shadowLastChange
   by self write
   by users read

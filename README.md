@@ -7,11 +7,13 @@
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 1. [What is it?](#what-is-it)
-1. [Configuration](#config)
-   1. [Initial configuration](#initial-config)
-   1. [Initial LDAP tree](#initial_ldaptree)
+1. [Configuration](#configuration)
+   1. [Initial configuration](#initial-configuration)
+   1. [Initial LDAP tree](#initial-ldap-tree)
    1. [Customizing the Password Policy](#ppolicy)
-   1. [Transport Encryption (LDAPS/STARTTLS)](#transport_encryption)
+   1. [Kerberos authentication (GSSAPI)](#kerberos-authentication)
+   1. [Transport Encryption (LDAPS/STARTTLS)](#transport-encryption)
+   1. [Syncrepl over LDAPS](#syncrepl-ldaps)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
    1. [Periodic LDAP Backup](#backup)
    1. [Synchronizing timezone/time with docker host](#timesync)
@@ -28,9 +30,9 @@ built for easy deployment of an [OpenLDAP 2.6](https://www.openldap.org/doc/adm
 
 Automatically rebuilt **weekly** to include the latest OS security fixes.
 
-## <a name="config"></a>Configuration
+## <a name="configuration"></a>Configuration
 
-### <a name="initial-config"></a>Initial configuration
+### <a name="initial-configuration"></a>Initial configuration
 
 Various parts of the LDAP server can be configured via environment variables. All environment variables starting with `LDAP_INIT_`
 are only evaluated on the **first** container launch. Changing their values later has no effect when restarting or updating the container.
@@ -91,7 +93,7 @@ Environment variables can for example be set in one of the following ways:
      vegardit/openldap
    ```
 
-### <a name="initial_ldaptree"></a>Initial LDAP tree
+### <a name="initial-ldap-tree"></a>Initial LDAP tree
 
 The initial LDAP tree structure is imported from [/opt/ldifs/init_org_tree.ldif](image/ldifs/init_org_tree.ldif).
 You can mount a custom file at that path if you need changes.
@@ -136,7 +138,69 @@ A custom rule can be provided via an environment variable, e.g.:
 LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 ```
 
-### <a name="transport_encryption"></a>Transport Encryption (LDAPS/STARTTLS)
+### <a name="kerberos-authentication"></a>Kerberos authentication (GSSAPI)
+
+The image advertises only the `EXTERNAL` and `GSSAPI` SASL mechanisms. It
+includes the MIT Kerberos GSSAPI plugin, but it does not create or manage a
+Kerberos realm, service principal, keytab, or user-to-DN mapping.
+
+To use GSSAPI:
+
+1. Create a service principal whose hostname matches the LDAP hostname, for
+   example `ldap/ldap.example.com@EXAMPLE.COM`, and export it to a keytab.
+1. Run the container with that hostname and mount the realm configuration and
+   keytab. The keytab must remain readable by the `openldap` service user.
+
+   ```yaml
+   services:
+     openldap:
+       image: vegardit/openldap:latest
+       hostname: ldap.example.com
+       volumes:
+         - ./krb5.conf:/etc/krb5.conf:ro
+         - ./ldap.keytab:/etc/krb5.keytab:ro
+   ```
+
+   For a keytab at another location, set the standard Kerberos environment
+   variable, for example `KRB5_KTNAME=FILE:/run/secrets/ldap/ldap.keytab`.
+
+   `hostname:` sets the container's Kerberos service identity, but does not make
+   that name reachable from a client. Ensure `ldap.example.com` resolves and
+   routes to the container from the client, for example through a Compose network
+   alias or by publishing port 389 on an appropriate host interface and pointing
+   DNS there.
+1. Install the LDAP and Kerberos client tools plus a Cyrus SASL GSSAPI plugin.
+   On Debian-based clients:
+
+   ```sh
+   sudo apt-get install krb5-user ldap-utils libsasl2-modules-gssapi-mit
+   ```
+
+   The GSSAPI plugin is a separate package on Debian; `ldap-utils` and
+   `krb5-user` alone do not make GSSAPI available to `ldapwhoami`.
+1. Obtain a ticket on the client and select GSSAPI explicitly:
+
+   ```sh
+   kinit alice@EXAMPLE.COM
+   ldapwhoami -Q -Y GSSAPI -H ldap://ldap.example.com
+   ```
+
+Without an `olcAuthzRegexp`, OpenLDAP uses the authenticated SASL identity such
+as `uid=alice,cn=gssapi,cn=auth` directly. Under the image's default ACLs, this
+unmapped identity receives the same read permissions as other authenticated
+users; separately restricted attributes such as `userPassword` remain
+protected. Add a strict mapping when the identity must receive the `self`, group,
+or write permissions of an LDAP entry.
+
+Identity mapping rewrites an authenticated identity; it is not an allowlist. If
+unmapped principals must not receive the default authenticated-user permissions,
+custom ACLs must deny identities below `cn=gssapi,cn=auth` before the generic
+`by users read` clauses. See the
+[OpenLDAP SASL guide](https://www.openldap.org/doc/admin26/sasl.html) for identity
+mapping details; broad regular expressions can map a principal to the wrong LDAP
+identity.
+
+### <a name="transport-encryption"></a>Transport Encryption (LDAPS/STARTTLS)
 
 LDAP traffic can be encrypted in **two** complementary ways:
 
@@ -147,13 +211,15 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
     |Variable                |Default                       |Description
     |------------------------|------------------------------|-----------
-    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if both certificate and private key are present at `/etc/ldap/certs/server.{crt,key}` (or supplied via `LDAP_TLS_CERT_FILE`/`LDAP_TLS_KEY_FILE`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
+    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if the files referenced by `LDAP_TLS_CERT_FILE` and `LDAP_TLS_KEY_FILE` exist (defaults: `/run/secrets/ldap/server.crt` and `/run/secrets/ldap/server.key`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
     |`LDAP_LDAPS_ENABLED`    |`true`                        |*(Only applies if TLS is enabled)*<br>`true` - enable implicit TLS (LDAPS) listener on port 636 (`ldaps://`)
     |`LDAP_TLS_CERT_FILE`    |`/run/secrets/ldap/server.crt`|Path to the server certificate **inside** the container
     |`LDAP_TLS_KEY_FILE`     |`/run/secrets/ldap/server.key`|Path to the matching private key **inside** the container
     |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates
-    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7B)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
-    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
+    |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7D)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
+    |`LDAP_TLS_SSF`          |`128`                         |Minimum **Security Strength Factor** (SSF) required for **all** TLS sessions. Accepted values are integers from `0` through `256`. `0` = clear-text allowed; `>=0` enforces that STARTTLS/LDAPS negotiate at minimum that strength (AES-128, AES-256). More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
+
+    `LDAP_TLS_ENABLED=auto` is reevaluated on every start. Use `true` when missing certificate files must stop the container instead of disabling TLS.
 
     *How to generate a self-signed cert for testing:*
 
@@ -259,6 +325,50 @@ LDAP traffic can be encrypted in **two** complementary ways:
         exposedByDefault: false # ignore containers that don't have a traefik.enable=true label
         watch: true
     ```
+
+
+### <a name="syncrepl-ldaps"></a>Syncrepl over LDAPS
+
+Syncrepl copies LDAP entries between two OpenLDAP servers:
+
+- The **provider** is the source server. Applications make directory changes here.
+- The **consumer** is the replica. It connects to the provider and copies its entries.
+
+Both servers run the same image. The image configures one-way replication during their first initialization and makes the consumer read-only.
+You write LDAP entries to the provider; the consumer receives a copy and rejects local changes.
+
+The minimum role-specific settings are:
+
+```sh
+# Provider
+LDAP_INIT_REPLICATION_ROLE=provider
+LDAP_TLS_VERIFY_CLIENT=never
+
+# Consumer
+LDAP_INIT_REPLICATION_ROLE=consumer
+LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider
+```
+
+Both nodes must mount the same replication-password secret at `/run/secrets/ldap-replication-password`, or set `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to another readable file.
+Use a generated, high-entropy value. The provider deliberately exempts this service account from password lockout so failed authentication attempts cannot lock the account and stop replication.
+Mount each node's server certificate and key at the default TLS paths; `LDAP_TLS_ENABLED=auto` enables TLS when both files are present.
+The consumer must mount the CA certificate on every start so it can verify the provider.
+The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as above.
+
+Use separate, initially empty config and data volumes for each node. The image skips local sample entries on a consumer so its first synchronization can populate the database.
+On a new consumer, the periodic backup worker waits for that first synchronization and does not create `LDAP_BACKUP_FILE` from an empty or partial replica.
+Both nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
+The provider creates `uid=replicator,${LDAP_INIT_ORG_DN}` for its replication account and `cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}` for that account's non-locking password policy.
+Because `uid` and `cn` are unique throughout the organization suffix, custom initialization LDIF must not use `uid: replicator` or `cn: ReplicationPasswordPolicy` on any other entry either.
+The provider certificate's Subject Alternative Name (SAN) must match the hostname in `LDAP_INIT_REPLICATION_PROVIDER_URI`.
+If applications connect to the consumer over LDAPS, the consumer also needs a certificate whose SAN matches its client-facing hostname.
+
+See the [complete Docker Compose example](example/docker-compose/syncrepl/) for local certificates, startup, and verification commands.
+
+Replication settings are applied only while a new config volume is initialized. Changing the bootstrap variables or secret later does not update the persisted `cn=config`.
+OpenLDAP stores the replication password in plaintext in the consumer config volume, so protect that volume accordingly.
+For configurations beyond one provider and one read-only consumer, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
+The environment-variable bootstrap supports only strict LDAPS with simple-bind authentication.
 
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user

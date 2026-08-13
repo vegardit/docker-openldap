@@ -66,6 +66,9 @@ EOF
 
 WORKDIR /opt/pqchecker
 
+# NOTE: Hadolint 2.15 resets its tracked shell after ENV; remove this once it preserves the Bash SHELL.
+# https://github.com/hadolint/hadolint/issues/1241
+# hadolint ignore=SC3010
 RUN <<EOF
   set -eu
 
@@ -132,7 +135,17 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo "#################################################"
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections
-  apt-get install --no-install-recommends -y slapd ldap-utils
+  apt-get install --no-install-recommends -y \
+    slapd \
+    ldap-utils \
+    libsasl2-modules-gssapi-mit
+
+  # The GSSAPI package depends on the generic module bundle. Limit slapd to the
+  # two mechanisms this image supports so that PLAIN and legacy mechanisms do
+  # not become advertised merely as a packaging side effect.
+  install -d /etc/ldap/sasl2
+  printf '%s\n' 'mech_list: EXTERNAL GSSAPI' >/etc/ldap/sasl2/slapd.conf
+
   echo "OpenLDAP $(apt-cache show slapd | grep Version)" >> /opt/build_info
   # workaround for 'service slapd stop' not working, see https://stackoverflow.com/a/58792698/5116073
   sed -i 's/--exec $SLAPD 2/--name slapd 2/' /etc/init.d/slapd
@@ -173,7 +186,7 @@ LABEL maintainer="$OCI_authors"
 
 # Default configuration: can be overridden at the docker command line
 # see https://github.com/hadolint/hadolint/wiki/DL3044
-# hadolint ignore=DL3044
+# hadolint ignore=DL3044,DL3064 # Sensitive values are runtime-only; the image stores empty defaults and secret file paths.
 ENV \
   INIT_SH_FILE='' \
   #
@@ -186,6 +199,9 @@ ENV \
   LDAP_INIT_ROOT_USER_PW='' \
   LDAP_INIT_ALLOW_CONFIG_ACCESS='false' \
   LDAP_INIT_ALLOW_ANON_BIND='false' \
+  LDAP_INIT_REPLICATION_ROLE='' \
+  LDAP_INIT_REPLICATION_PROVIDER_URI='' \
+  LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE='' \
   LDAP_INIT_PPOLICY_DEFAULT_DN='cn=DefaultPasswordPolicy,ou=Policies,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_PPOLICY_PW_MIN_LENGTH=8 \
   LDAP_INIT_PPOLICY_MAX_FAILURES=3 \
