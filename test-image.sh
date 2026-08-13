@@ -22,13 +22,18 @@ consumer_data_volume="$test_id-consumer-data"
 test_dir=$(mktemp -d)
 tls_dir="$test_dir/tls"
 replication_secret_dir="$test_dir/secrets"
+# docker cp preserves this basename under /opt/ldifs, so it must match the
+# public container path rather than a descriptive test-only directory name.
+custom_ldif_dir="$test_dir/custom"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
 docker_ca_file="$tls_dir/ca.crt"
 docker_cert_file="$tls_dir/server.crt"
 docker_key_file="$tls_dir/server.key"
 docker_replication_secret_dir="$replication_secret_dir"
+docker_custom_ldif_dir="$custom_ldif_dir"
 root_dn='uid=admin,DC=example,DC=com'
 root_password='test-only-password'
+custom_entry_dn='cn=custom-entry,ou=Custom,DC=example,DC=com'
 replication_dn='uid=replicator,DC=example,DC=com'
 # The embedded space verifies that LDIF interpolation preserves quoted credentials.
 replication_password='test-only replication password'
@@ -45,6 +50,7 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_cert_file=$(cygpath -w "$docker_cert_file")
   docker_key_file=$(cygpath -w "$docker_key_file")
   docker_replication_secret_dir=$(cygpath -w "$docker_replication_secret_dir")
+  docker_custom_ldif_dir=$(cygpath -w "$docker_custom_ldif_dir")
 fi
 
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
@@ -73,13 +79,26 @@ function create_fresh_volumes() {
 }
 
 function start_container() {
-  docker run --detach --name "$container" \
+  local copy_custom_ldifs=false
+  if [[ ${1:-} == --custom-ldifs ]]; then
+    copy_custom_ldifs=true
+    shift
+  fi
+
+  docker create --name "$container" \
     --env LDAP_BACKUP_TIME= \
     --env LDAP_INIT_ROOT_USER_PW=test-only-password \
     "$@" \
     --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
     --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
     "$image_name" >/dev/null
+
+  if [[ $copy_custom_ldifs == true ]]; then
+    # act's nested Docker daemon cannot resolve runner-local bind paths. Copying
+    # before start exercises the same container path on every supported runner.
+    docker cp "$docker_custom_ldif_dir" "$container:/opt/ldifs/"
+  fi
+  docker start "$container" >/dev/null
 }
 
 function wait_until_ready() {
@@ -181,6 +200,11 @@ function start_replication_node() {
     # container. The image must discover the conventional secret path itself.
     docker cp "$docker_replication_secret_dir" "$node:/run/"
   fi
+  if [[ $role == consumer ]]; then
+    # The fixture contains an unresolved placeholder on this node. A consumer
+    # can start only if custom data is correctly left to syncrepl's provider.
+    docker cp "$docker_custom_ldif_dir" "$node:/opt/ldifs/"
+  fi
   docker start "$node" >/dev/null
 }
 
@@ -210,16 +234,77 @@ function wait_for_replica_entry() {
   return 1
 }
 
+mkdir "$custom_ldif_dir"
+# The visible modification depends on the visible add and uses an explicit change
+# record. Together they cover bytewise ordering, default-add behavior, and interpolation.
+cat >"$custom_ldif_dir/.init.sh" <<'SH'
+# The entrypoint sources this file into its own shell. Leaving dotglob enabled
+# reproduces an operator customization that must not broaden the LDIF contract.
+shopt -s dotglob
+SH
+cat >"$custom_ldif_dir/.must-not-load.ldif" <<'LDIF'
+dn: cn=hidden-custom-entry,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalRole
+cn: hidden-custom-entry
+LDIF
+cat >"$custom_ldif_dir/10-add.ldif" <<'LDIF'
+dn: ou=Custom,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalUnit
+ou: Custom
+
+dn: cn=${CUSTOM_ENTRY_CN},ou=Custom,${LDAP_INIT_ORG_DN}
+objectClass: top
+objectClass: organizationalRole
+cn: ${CUSTOM_ENTRY_CN}
+description: value-before-ordered-modify
+LDIF
+# The non-padded "2" is intentional: C-locale bytewise order must place "10"
+# first, while natural numeric ordering would attempt this modification too soon.
+cat >"$custom_ldif_dir/2-modify.ldif" <<'LDIF'
+dn: cn=${CUSTOM_ENTRY_CN},ou=Custom,${LDAP_INIT_ORG_DN}
+changetype: modify
+replace: description
+description: loaded-in-filename-order
+LDIF
+
 create_fresh_volumes
 # RFC2307bis is opt-in, so exercise its generated slapadd input here. Later
 # fresh replication fixtures retain default-schema coverage.
-start_container --env LDAP_INIT_RFC2307BIS_SCHEMA=1
+start_container \
+  --custom-ldifs \
+  --env INIT_SH_FILE=/opt/ldifs/custom/.init.sh \
+  --env LDAP_INIT_RFC2307BIS_SCHEMA=1 \
+  --env CUSTOM_ENTRY_CN=custom-entry
 
 wait_until_ready
 docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
 docker exec "$container" test -s /var/lib/ldap/data.mdb
 docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
 docker exec "$container" test -d /var/lib/ldap/lost+found
+
+custom_entry=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -D "$root_dn" -w "$root_password" \
+    -b "$custom_entry_dn" -s base '(objectClass=*)' description)
+if [[ $custom_entry != *'description: loaded-in-filename-order'* ]]; then
+  printf '%s\n' "$custom_entry" >&2
+  echo "Custom initialization LDIFs were not interpolated and loaded in order." >&2
+  exit 1
+fi
+
+# Search below a known base so absence is an empty successful result; querying a
+# missing sentinel DN directly would abort this set -e test before the assertion.
+hidden_custom_entry=$(docker exec "$container" \
+  ldapsearch -LLL -x -H ldap://127.0.0.1 \
+    -D "$root_dn" -w "$root_password" \
+    -b 'DC=example,DC=com' -s one '(cn=hidden-custom-entry)' 1.1)
+if [[ $hidden_custom_entry == *'dn: '* ]]; then
+  printf '%s\n' "$hidden_custom_entry" >&2
+  echo "A hidden custom initialization LDIF was loaded." >&2
+  exit 1
+fi
 
 # Anonymous Root DSE access is intentional: clients need it to discover server
 # capabilities before choosing how to bind. It must not extend to directory data.
