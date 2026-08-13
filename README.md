@@ -1,9 +1,9 @@
-# vegardit/openldap <a href="https://github.com/vegardit/docker-openldap/" title="GitHub Repo"><img height="30" src="https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/github.svg?sanitize=true"></a>
+# ReproStat/openldap-container <a href="https://github.com/reprostat/openldap-container/" title="GitHub Repo"><img height="30" src="https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/github.svg?sanitize=true"></a>
 
-[![Build Status](https://github.com/vegardit/docker-openldap/workflows/Build/badge.svg "GitHub Actions")](https://github.com/vegardit/docker-openldap/actions?query=workflow%3ABuild)
-[![License](https://img.shields.io/github/license/vegardit/docker-openldap.svg?label=license)](#license)
-[![Docker Pulls](https://img.shields.io/docker/pulls/vegardit/openldap.svg)](https://hub.docker.com/r/vegardit/openldap)
-[![Docker Stars](https://img.shields.io/docker/stars/vegardit/openldap.svg)](https://hub.docker.com/r/vegardit/openldap)
+[![Build Status](https://github.com/reprostat/openldap-container/workflows/Build/badge.svg "GitHub Actions")](https://github.com/reprostat/openldap-container/actions?query=workflow%3ABuild)
+[![License](https://img.shields.io/github/license/reprostat/openldap-container.svg?label=license)](#license)
+[![Docker Pulls](https://img.shields.io/docker/pulls/reprostat/openldap-container.svg)](https://hub.docker.com/r/reprostat/openldap-container)
+[![Docker Stars](https://img.shields.io/docker/stars/reprostat/openldap-container.svg)](https://hub.docker.com/r/reprostat/openldap-container)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 1. [What is it?](#what-is-it)
@@ -65,13 +65,13 @@ Environment variables can for example be set in one of the following ways:
      -v /my_data/ldap/var/:/var/lib/ldap/ \
      -v /my_data/ldap/etc/:/etc/ldap/slapd.d/ \
      -p 389:389 \
-     vegardit/openldap
+     reprostat/openldap-container
    ```
 
 1. Using an [env-file](https://docs.docker.com/compose/env-file/) to store all changed variables and use the option `--env-file` with `docker run`, e.g.:
 
    ```sh
-   docker run -itd --env-file environment vegardit/openldap
+   docker run -itd --env-file environment reprostat/openldap-container
    ```
 
    In the env-file values must not be enclosed using quotes (`'` or `"`), please remove them. See this example file: [example/docker/example.env](example/docker/example.env).
@@ -90,7 +90,7 @@ Environment variables can for example be set in one of the following ways:
    docker run -itd \
      -e INIT_SH_FILE=/mnt/my_init.sh \
      -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro \
-     vegardit/openldap
+     reprostat/openldap-container
    ```
 
 ### <a name="initial-ldap-tree"></a>Initial LDAP tree
@@ -238,7 +238,7 @@ LDAP traffic can be encrypted in **two** complementary ways:
     ```yaml
     services:
       openldap:
-        image: vegardit/openldap:latest
+        image: reprostat/openldap-container:latest
         environment:
           # ... other options
         ports:
@@ -257,7 +257,7 @@ LDAP traffic can be encrypted in **two** complementary ways:
     ```yaml
     services:
       openldap:
-        image: vegardit/openldap:latest
+        image: reprostat/openldap-container:latest
         environment:
           LDAP_TLS_KEY_FILE: /opt/tls/server.key
           LDAP_TLS_CERT_FILE: /opt/tls/server.crt
@@ -279,7 +279,7 @@ LDAP traffic can be encrypted in **two** complementary ways:
     ```yaml
     services:
       openldap:
-        image: vegardit/openldap:latest
+        image: reprostat/openldap-container:latest
         ports:
           - "389:389"
         environment:
@@ -405,7 +405,7 @@ Docker compose file example:
 version: '3.7'
 services:
   openldap:
-    image: vegardit/openldap:latest
+    image: reprostat/openldap-container:latest
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro

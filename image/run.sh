@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
-# SPDX-FileContributor: Sebastian Thomschke
+# SPDX-FileCopyrightText: © ReproStat (https://github.com/reprostat)
+# SPDX-FileCopyrightText: based on docker-openldap by © Vegard IT GmbH (https://vegardit.com)
+# SPDX-FileContributor: Tibor Auer
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
+# SPDX-ArtifactOfProjectHomePage: https://github.com/reprostat/openldap-container
 
 # shellcheck disable=SC1091  # Not following: /opt/bash-init.sh was not specified as input
 source /opt/bash-init.sh

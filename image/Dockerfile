@@ -2,10 +2,11 @@
 # see https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/reference.md
 # see https://docs.docker.com/engine/reference/builder/#syntax
 #
-# SPDX-FileCopyrightText: © Vegard IT GmbH (https://vegardit.com)
-# SPDX-FileContributor: Sebastian Thomschke
+# SPDX-FileCopyrightText: © ReproStat (https://github.com/reprostat)
+# SPDX-FileCopyrightText: based on docker-openldap by © Vegard IT GmbH (https://vegardit.com)
+# SPDX-FileContributor: Tibor Auer
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
+# SPDX-ArtifactOfProjectHomePage: https://github.com/reprostat/openldap-container
 
 # https://hub.docker.com/_/debian/tags?name=trixie-slim
 ARG BASE_IMAGE=debian:trixie-slim

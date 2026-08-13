@@ -1,5 +1,6 @@
 #############################
-# @author Sebastian Thomschke, Vegard IT GmbH
+# @author Tibor Auer, ReproStat
+# based on docker-openldap by Sebastian Thomschke, Vegard IT GmbH
 #############################
 
 version: '3.7'
@@ -9,8 +10,8 @@ version: '3.7'
 services:
 
   ldap_service:
-    # https://github.com/vegardit/docker-openldap
-    image: vegardit/openldap:latest # https://hub.docker.com/r/vegardit/openldap
+    # https://github.com/reprostat/openldap-container
+    image: reprostat/openldap-container:latest # https://hub.docker.com/r/reprostat/openldap-container
     environment:
       LDAP_INIT_ORG_DN: DC=example,DC=com
       LDAP_INIT_ORG_NAME: Example Inc.
