@@ -43,6 +43,7 @@ replication_dn='uid=replicator,DC=example,DC=com'
 replication_password='test-only replication password'
 replication_group_dn='cn=replication-group,DC=example,DC=com'
 replication_member_dn='uid=replication-member,DC=example,DC=com'
+initial_backup_pending_marker='/var/lib/ldap/.initial-backup-pending'
 
 if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   # MSYS otherwise rewrites Linux container targets such as /mnt. Convert only
@@ -72,6 +73,141 @@ function cleanup() {
   rm -rf -- "$test_dir"
 }
 trap cleanup EXIT
+
+function test_phase() {
+  printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$1"
+}
+
+function test_step() {
+  printf '[%s]   %s\n' "$(date +%H:%M:%S)" "$1"
+}
+
+test_phase "Checking backup scheduler logic"
+
+# Exercise schedule arithmetic inside the image without waiting for wall-clock
+# time. The 03:05 case models an export that started at 02:00 and ran for 65
+# minutes: the next backup must still target the following 02:00, not add a
+# fixed 23-hour delay and miss that day.
+docker run --rm --entrypoint bash \
+  --env LDAP_BACKUP_TIME=02:00 \
+  "$image_name" -c '
+    set -euo pipefail
+    source /opt/backup.sh
+
+    function assert_schedule_delay() {
+      local current_time=$1
+      local allow_current_minute=$2
+      local expected_delay=$3
+      local actual_delay
+
+      actual_delay=$(ldap_backup_seconds_until_schedule \
+        "$current_time" "$allow_current_minute")
+      if [[ $actual_delay != "$expected_delay" ]]; then
+        echo "At [$current_time], expected [$expected_delay] seconds until the next backup but got [$actual_delay]." >&2
+        return 1
+      fi
+    }
+
+    assert_schedule_delay 01:59:30 true 30
+    assert_schedule_delay 02:00:30 true 0
+    # A completed backup must not start again during the minute that launched it.
+    assert_schedule_delay 02:00:30 false 86370
+    assert_schedule_delay 03:05:00 true 82500
+
+    # Each sleep advances one fixed GNU date response. This exercises the waiter
+    # without duplicating its clock semantics in the test.
+    function assert_selected_schedule_date() {
+      local expected_date=$1
+      local last_backup_date=$2
+      shift 2
+      local -a mock_schedule_states=("$@")
+      local mock_schedule_index=0
+      local selected_schedule_date=
+
+      function date() {
+        printf "%s\n" "${mock_schedule_states[$mock_schedule_index]}"
+      }
+      function sleep() {
+        ((mock_schedule_index += 1))
+        if (( mock_schedule_index >= ${#mock_schedule_states[@]} )); then
+          echo "The scheduler did not select an occurrence from the supplied clock states." >&2
+          return 1
+        fi
+      }
+
+      wait_for_ldap_backup_schedule selected_schedule_date "$last_backup_date"
+      if [[ $selected_schedule_date != "$expected_date" ]]; then
+        echo "Expected backup date [$expected_date] but selected [$selected_schedule_date]." >&2
+        return 1
+      fi
+    }
+
+    ldap_backup_schedule_max_sleep_seconds=1
+
+    # A delayed wake or same-offset forward correction must recover the occurrence
+    # it crossed instead of silently waiting until tomorrow.
+    assert_selected_schedule_date 2026-06-01 "" \
+      "2026-06-01 01:58:00 +0200 1780271880" \
+      "2026-06-01 03:05:00 +0200 1780275900"
+
+    # A changed offset is a civil-time transition, not evidence that the absent
+    # spring-forward hour should receive a catch-up backup.
+    assert_selected_schedule_date 2026-03-30 "" \
+      "2026-03-29 01:58:00 +0100 1774745880" \
+      "2026-03-29 03:05:00 +0200 1774746300" \
+      "2026-03-30 02:00:00 +0200 1774828800"
+
+    # Suppress a date that already ran even when its local hour repeats at the end
+    # of DST; the next date remains eligible.
+    assert_selected_schedule_date 2026-10-26 2026-10-25 \
+      "2026-10-25 02:00:30 +0200 1792886430" \
+      "2026-10-26 02:00:00 +0100 1792976400"
+
+    # Exercise the worker handoff without waiting for real time. The first mocked
+    # occurrence must reach the configured writer; the second wait stops the loop.
+    worker_wait_count=0
+    worker_write_count=0
+    LDAP_BACKUP_FILE=/tmp/scheduled-backup.ldif
+    is_syncrepl_consumer=false
+    function wait_for_ldap_backup_schedule() {
+      ((worker_wait_count += 1))
+      ((worker_wait_count == 1)) || return 1
+      printf -v "$1" '%s' 2026-06-01
+    }
+    function write_ldap_backup() {
+      [[ $1 == "$LDAP_BACKUP_FILE" ]] || return 1
+      ((worker_write_count += 1))
+    }
+    function log() {
+      :
+    }
+    backup_ldap || true
+    if ((worker_wait_count != 2 || worker_write_count != 1)); then
+      echo "The periodic backup worker did not hand the scheduled occurrence to the writer." >&2
+      exit 1
+    fi
+
+    # An empty destination pauses the pending initial export. It must not be
+    # converted into a relative path such as ./..tmp; retaining the pending state
+    # lets a later startup complete the export after a destination is configured.
+    initial_backup_pending=true
+    LDAP_BACKUP_FILE=
+    backup_write_attempted=false
+    # Record the call without touching storage. Returning failure avoids marker
+    # cleanup; the log stub lets the explicit assertion report the regression.
+    function write_ldap_backup() {
+      backup_write_attempted=true
+      return 1
+    }
+    function log() {
+      :
+    }
+    create_initial_ldap_backup
+    if [[ $backup_write_attempted == true ]]; then
+      echo "An empty LDAP_BACKUP_FILE must not start an initial backup." >&2
+      exit 1
+    fi
+  '
 
 function create_fresh_volumes() {
   for volume in "$config_volume" "$data_volume"; do
@@ -279,6 +415,18 @@ LDIF
 # The visible modification depends on the visible add and uses an explicit change
 # record. Together they cover bytewise ordering, default-add behavior, and interpolation.
 cat >"$custom_ldif_dir/.init.sh" <<'SH'
+if [[ ${PAUSE_INIT_FOR_LISTENER_TEST:-} == true ]]; then
+  function ldapadd() {
+    # Hold the first durable LDAP write while the host verifies that the
+    # initialization daemon is reachable only through its local Unix socket.
+    : >/run/init-listener-test-ready
+    while [[ ! -e /run/init-listener-test-release ]]; do
+      sleep 0.1
+    done
+    /usr/bin/ldapadd "$@"
+  }
+fi
+
 # The entrypoint sources this file into its own shell. Leaving dotglob enabled
 # reproduces an operator customization that must not broaden the LDIF contract.
 shopt -s dotglob
@@ -312,17 +460,102 @@ replace: description
 description: loaded-in-filename-order
 LDIF
 
+test_phase "Checking fresh-volume initialization and restart behavior"
 create_fresh_volumes
+
+# Reserve backup intent before LDAP initialization becomes non-idempotent. Seed
+# the volumes exactly as the entrypoint does, then inject an invalid marker so a
+# failed reservation must leave the seeded configuration untouched and retryable.
+docker run --rm --entrypoint sh \
+  --mount "type=volume,src=$config_volume,dst=/mnt/config" \
+  --mount "type=volume,src=$data_volume,dst=/mnt/data" \
+  "$image_name" -c '
+    cp -r --preserve=all /etc/ldap/slapd.d_orig/. /mnt/config
+    cp -r --preserve=all /var/lib/ldap_orig/. /mnt/data
+    printf "%s\n" collision > /mnt/data/.initial-backup-pending
+  '
+# This failure must occur before custom schemas or LDIFs are read, so copying those
+# fixtures into a container that is expected to exit would only add Docker overhead.
+start_container --env LDAP_INIT_RFC2307BIS_SCHEMA=1
+for _ in {1..40}; do
+  if [[ $(docker inspect --format '{{.State.Running}}' "$container") != true ]]; then
+    break
+  fi
+  sleep 0.5
+done
+invalid_initial_marker_logs=$(docker logs "$container" 2>&1)
+if [[ $(docker inspect --format '{{.State.Running}}' "$container") == true ]] ||
+    [[ $invalid_initial_marker_logs != *"Cannot create initial backup marker"* ]]; then
+  printf '%s\n' "$invalid_initial_marker_logs" >&2
+  echo "An invalid initial-backup marker did not fail initialization." >&2
+  exit 1
+fi
+
+# The RFC2307bis replacement is the earliest optional durable mutation and the
+# sudo schema is the first unconditional LDAP add. Their absence proves the
+# marker failure happened at the intended transaction boundary, not merely that
+# the entrypoint eventually rejected the collision.
+if ! docker run --rm --entrypoint sh \
+    --mount "type=volume,src=$config_volume,dst=/mnt/config" \
+    --mount "type=volume,src=$data_volume,dst=/mnt/data" \
+    "$image_name" -c '
+      test -n "$(find /mnt/config -type f -name "*nis*.ldif" -print -quit)" &&
+      test -z "$(find /mnt/config -type f -name "*rfc2307bis*.ldif" -print -quit)" &&
+      test -z "$(find /mnt/config -type f -name "*sudo*.ldif" -print -quit)" &&
+      rm -f /mnt/data/.initial-backup-pending &&
+      mkdir -m 700 /mnt/data/.initial-backup-pending
+    '; then
+  echo "A failed initial-backup marker reservation modified LDAP configuration." >&2
+  exit 1
+fi
+
+docker rm "$container" >/dev/null
+# The volume helper above replaces the invalid fixture with an empty directory.
+# That is the only state the image can safely adopt: rmdir later consumes the
+# marker without ever deleting operator or partially written data.
 # RFC2307bis is opt-in, so exercise its generated slapadd input here. Later
 # fresh replication fixtures retain default-schema coverage.
 start_container \
   --bootstrap-ldifs \
   --env INIT_SH_FILE=/opt/ldifs/custom/.init.sh \
+  --env PAUSE_INIT_FOR_LISTENER_TEST=true \
   --env LDAP_INIT_RFC2307BIS_SCHEMA=1 \
   --env CUSTOM_ENTRY_CN=custom-entry \
   --env CUSTOM_SCHEMA_ATTRIBUTE_NAME=customBootstrapValue
 
+# Inspect the daemon while initialization is blocked at its first LDAP write.
+# Checking its exact -h argument covers both LDAP and LDAPS without relying on
+# timing-sensitive connection failures or the container's published ports.
+test_step "Checking temporary initialization listener"
+# Poll inside one exec session. Repeated Docker API calls can take minutes through
+# act's remote daemon even though each in-container file check is effectively free.
+if ! temporary_slapd_arguments=$(docker exec "$container" sh -c '
+  remaining=600
+  while [ ! -e /run/init-listener-test-ready ] && [ "$remaining" -gt 0 ]; do
+    sleep 0.1
+    remaining=$((remaining - 1))
+  done
+  test -e /run/init-listener-test-ready || exit 1
+  pid=$(cat /run/slapd-init/slapd.pid)
+  tr "\0" "\n" <"/proc/$pid/cmdline" || exit
+  touch /run/init-listener-test-release
+'); then
+  docker logs "$container" >&2
+  echo "Initialization did not reach the temporary slapd listener check." >&2
+  exit 1
+fi
+temporary_slapd_arguments=$'\n'"$temporary_slapd_arguments"$'\n'
+if [[ $temporary_slapd_arguments != *$'\n-h\nldapi:///\n'* ]]; then
+  printf '%s' "$temporary_slapd_arguments" >&2
+  echo "The temporary initialization daemon exposed a network listener." >&2
+  exit 1
+fi
+
 wait_until_ready
+if docker exec "$container" test -e "$initial_backup_pending_marker"; then
+  echo "An existing valid initial-backup marker was not consumed after export." >&2
+  exit 1
+fi
 docker exec "$container" test -f /etc/ldap/slapd.d/cn=config.ldif
 docker exec "$container" test -s /var/lib/ldap/data.mdb
 docker exec "$container" test -d /etc/ldap/slapd.d/lost+found
@@ -414,10 +647,161 @@ if [[ $(docker logs "$container" 2>&1) == *"Applying initial configuration"* ]];
   exit 1
 fi
 
-docker stop "$container" >/dev/null
-docker rm "$container" >/dev/null
+test_phase "Checking backup publication and recovery hardening"
+
+# Fresh-volume initialization above already proves that run.sh consumes a pending
+# marker and publishes its initial export. Exercise the remaining helper contracts
+# in that running container so remote Docker engines cannot turn redundant LDAP
+# restarts into multi-minute gaps with no test output.
+test_step "Exercising backup functions in the running container"
+docker exec "$container" bash -c '
+  source /opt/bash-init.sh
+  source /opt/backup.sh
+
+  function backup_test_step() {
+    printf "[%s]     %s\n" "$(date +%H:%M:%S)" "$1"
+  }
+
+  backup_test_step "Checking initial backup publication"
+  # Point the destination at a root-owned image file so direct root output would
+  # corrupt it. Atomic replacement must leave the symlink target unchanged. The
+  # marked abandoned export and lookalike sibling bound crash cleanup precisely.
+  build_info_checksum=$(sha256sum /opt/build_info)
+  build_info_checksum=${build_info_checksum%% *}
+  LDAP_BACKUP_FILE=/var/lib/ldap/initial-backup-symlink.ldif
+  ln -sf /opt/build_info "$LDAP_BACKUP_FILE"
+  install -d -m 0700 "$initial_backup_pending_marker"
+  initial_directory=/var/lib/ldap/.initial-backup-symlink.ldif.tmp
+  install -d -o openldap -g openldap -m 0700 "$initial_directory"
+  install -o openldap -g openldap -m 0600 /dev/null \
+    "$initial_directory/$ldap_backup_temporary_directory_marker"
+  install -o openldap -g openldap -m 0600 /dev/null "$initial_directory/export.ABC123"
+  printf "%s\n" abandoned >"$initial_directory/export.ABC123"
+  install -o openldap -g openldap -m 0600 /dev/null \
+    /var/lib/ldap/.initial-backup-symlink.ldif.tmp.KEEP01
+  printf "%s\n" preserve >/var/lib/ldap/.initial-backup-symlink.ldif.tmp.KEEP01
+  load_ldap_backup_state
+  create_initial_ldap_backup
+
+  current_build_info_checksum=$(sha256sum /opt/build_info)
+  current_build_info_checksum=${current_build_info_checksum%% *}
+  if [[ $current_build_info_checksum != "$build_info_checksum" ]] ||
+      [[ ! -f $LDAP_BACKUP_FILE || -L $LDAP_BACKUP_FILE ]] ||
+      ! grep -F "dn:" "$LDAP_BACKUP_FILE" >/dev/null ||
+      [[ $(stat -c "%U:%G:%a" "$LDAP_BACKUP_FILE") != openldap:openldap:600 ]] ||
+      [[ $(stat -c "%U:%G:%a" "$initial_directory/$ldap_backup_temporary_directory_marker") != openldap:openldap:600 ]] ||
+      [[ -e $initial_directory/export.ABC123 ]] ||
+      ! grep -Fx preserve /var/lib/ldap/.initial-backup-symlink.ldif.tmp.KEEP01 >/dev/null ||
+      [[ -e $initial_backup_pending_marker ]]; then
+    echo "The initial backup was unsafe, incomplete, or cleaned data outside its private temporary directory." >&2
+    exit 1
+  fi
+
+  backup_test_step "Checking periodic backup publication"
+  # Scheduler arithmetic is covered deterministically above. Invoke its writer
+  # directly so this integration suite never waits for a future wall-clock minute.
+  # The service-owned victim proves that privilege dropping alone is insufficient.
+  periodic_victim=/etc/ldap/slapd.d/periodic-backup-victim
+  periodic_backup=/var/lib/ldap/periodic-backup-symlink.ldif
+  install -o openldap -g openldap -m 0600 /dev/null "$periodic_victim"
+  printf "%s\n" periodic-victim >"$periodic_victim"
+  ln -sf "$periodic_victim" "$periodic_backup"
+  write_ldap_backup "$periodic_backup"
+  if [[ ! -f $periodic_backup || -L $periodic_backup ]] ||
+      ! grep -F "dn:" "$periodic_backup" >/dev/null ||
+      ! grep -Fx periodic-victim "$periodic_victim" >/dev/null ||
+      [[ $(stat -c "%U:%G:%a" "$periodic_backup") != openldap:openldap:600 ]]; then
+    echo "The periodic backup followed a symlink or was not published as a private service-owned file." >&2
+    exit 1
+  fi
+
+  backup_test_step "Checking temporary-directory recovery"
+  unmarked_directory=/var/lib/ldap/.unmarked-backup.ldif.tmp
+  install -d -o openldap -g openldap -m 0700 "$unmarked_directory"
+  install -o openldap -g openldap -m 0600 /dev/null "$unmarked_directory/operator-data"
+  printf "%s\n" preserve >"$unmarked_directory/operator-data"
+  if unmarked_logs=$(prepare_ldap_backup_temporary_directory "$unmarked_directory" 2>&1) ||
+      [[ $unmarked_logs != *"is not an initialized private directory; refusing to remove its contents"* ]] ||
+      ! grep -Fx preserve "$unmarked_directory/operator-data" >/dev/null; then
+    printf "%s\n" "$unmarked_logs" >&2
+    echo "An unmarked backup temporary directory was accepted or modified." >&2
+    exit 1
+  fi
+
+  # Validation must finish before cleanup, or traversal order could delete a
+  # legitimate stale export before a later unexpected entry is rejected.
+  mixed_directory=/var/lib/ldap/.mixed-backup.ldif.tmp
+  install -d -o openldap -g openldap -m 0700 "$mixed_directory"
+  install -o openldap -g openldap -m 0600 /dev/null \
+    "$mixed_directory/$ldap_backup_temporary_directory_marker"
+  install -o openldap -g openldap -m 0600 /dev/null "$mixed_directory/export.ABC123"
+  install -o openldap -g openldap -m 0600 /dev/null "$mixed_directory/operator-data"
+  printf "%s\n" stale >"$mixed_directory/export.ABC123"
+  printf "%s\n" preserve >"$mixed_directory/operator-data"
+  if mixed_logs=$(prepare_ldap_backup_temporary_directory "$mixed_directory" 2>&1) ||
+      [[ $mixed_logs != *"Unexpected entry "* ]] ||
+      ! grep -Fx stale "$mixed_directory/export.ABC123" >/dev/null ||
+      ! grep -Fx preserve "$mixed_directory/operator-data" >/dev/null; then
+    printf "%s\n" "$mixed_logs" >&2
+    echo "Backup temporary-directory validation modified data before rejecting an unexpected entry." >&2
+    exit 1
+  fi
+
+  # A crash can occur after mkdir but before marker creation. An empty private
+  # directory is safe to adopt because no unknown data can be lost.
+  recoverable_directory=/var/lib/ldap/.recoverable-backup.ldif.tmp
+  install -d -o openldap -g openldap -m 0700 "$recoverable_directory"
+  prepare_ldap_backup_temporary_directory "$recoverable_directory"
+  if [[ $(stat -c "%U:%G:%a" "$recoverable_directory/$ldap_backup_temporary_directory_marker") != openldap:openldap:600 ]]; then
+    echo "An interrupted empty backup directory was not safely initialized." >&2
+    exit 1
+  fi
+
+  # Recovery is tied to the configured destination, not the daily schedule. It
+  # must reclaim validated crash state even when no periodic worker will start.
+  disabled_directory=/var/lib/ldap/.disabled-backup.ldif.tmp
+  install -d -o openldap -g openldap -m 0700 "$disabled_directory"
+  install -o openldap -g openldap -m 0600 /dev/null \
+    "$disabled_directory/$ldap_backup_temporary_directory_marker"
+  install -o openldap -g openldap -m 0600 /dev/null "$disabled_directory/export.ABC123"
+  recover_interrupted_ldap_backup /var/lib/ldap/disabled-backup.ldif
+  if [[ -e $disabled_directory/export.ABC123 ]]; then
+    echo "Disabled-schedule recovery retained a stale export." >&2
+    exit 1
+  fi
+
+  # Read and search permission is insufficient: root-owned mode 0755 passes find
+  # on an empty directory but cannot hold the next service-owned export.
+  install -d -m 0777 /tmp/openldap-backup
+  install -d -m 0755 /tmp/openldap-backup/.unwritable-backup.ldif.tmp
+  if unwritable_logs=$(check_ldap_backup_directory /tmp/openldap-backup/unwritable-backup.ldif 2>&1) ||
+      [[ $unwritable_logs != *"must be owned by openldap with mode 0700"* ]]; then
+    printf "%s\n" "$unwritable_logs" >&2
+    echo "An unusable backup temporary directory passed validation." >&2
+    exit 1
+  fi
+
+  backup_test_step "Checking configured-directory validation"
+  # Call the same configuration boundary used by run.sh. It must reject a fixed
+  # permission problem before starting the background scheduler.
+  LDAP_BACKUP_TIME=00:00
+  LDAP_BACKUP_FILE=/opt/root-only-backup.ldif
+  if root_only_logs=$(configure_ldap_backup 2>&1) ||
+      [[ $root_only_logs != *"LDAP backup directory [/opt] is not writable by openldap"* ]]; then
+    printf "%s\n" "$root_only_logs" >&2
+    echo "A root-only backup directory did not fail with the service-account diagnostic." >&2
+    exit 1
+  fi
+'
+
+test_step "Resetting volumes for invalid-configuration checks"
+# Persistence behavior was verified before this phase, and these volumes are
+# discarded next. Forced removal avoids another graceful-shutdown wait here.
+docker rm --force "$container" >/dev/null
 docker volume rm "$config_volume" "$data_volume" >/dev/null
 create_fresh_volumes
+
+test_phase "Checking invalid startup configuration"
 
 # A file mounted at the public directory path is almost always a Compose typo.
 # Reject it before slapd starts so the same volumes remain safe for a corrected retry.
@@ -548,6 +932,8 @@ command -v openssl >/dev/null || {
   echo "openssl is required for the TLS replication lifecycle test." >&2
   exit 1
 }
+
+test_phase "Checking TLS replication and consumer backup lifecycle"
 
 mkdir "$tls_dir" "$replication_secret_dir"
 printf '%s\n' \
@@ -853,6 +1239,23 @@ if [[ $(docker logs "$consumer_container" 2>&1) == *"Applying initial configurat
   exit 1
 fi
 
+# A writer marker can survive beside a configuration volume that is later paired
+# with persisted consumer state. The persisted syncrepl role is authoritative:
+# discard the stale request instead of exporting a potentially partial replica.
+docker exec "$consumer_container" sh -c \
+  "rm -f /var/lib/ldap/data.ldif && mkdir '$initial_backup_pending_marker'"
+docker stop "$consumer_container" >/dev/null
+docker rm "$consumer_container" >/dev/null
+start_replication_node \
+  "$consumer_container" consumer "$consumer_config_volume" "$consumer_data_volume" \
+  '' '' "$docker_ca_file"
+wait_until_ready "$consumer_container"
+if docker exec "$consumer_container" test -e /var/lib/ldap/data.ldif ||
+    docker exec "$consumer_container" test -e "$initial_backup_pending_marker"; then
+  echo "A persisted consumer processed or retained a stale initial-backup marker." >&2
+  exit 1
+fi
+
 docker exec -i "$provider_container" \
   ldapadd -x -H ldapi:/// -D "$root_dn" -w "$root_password" <<'LDIF'
 dn: cn=replication-after-restart,DC=example,DC=com
@@ -864,3 +1267,5 @@ LDIF
 # A new provider write proves syncrepl resumed; the pre-restart entry alone
 # could have been stale data that merely survived in the consumer volume.
 wait_for_replica_entry 'cn=replication-after-restart,DC=example,DC=com'
+
+test_phase "All image integration checks passed"

@@ -135,10 +135,16 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo "#################################################"
   echo 'slapd slapd/root_password password whatever' | debconf-set-selections
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections
+  # ldap-utils provides the LDAP client commands used for bootstrap changes,
+  # migrations, readiness checks, and syncrepl state inspection.
+  # libsasl2-modules-gssapi-mit enables the GSSAPI mechanism advertised by slapd.
+  # util-linux provides setpriv, which runs backup filesystem operations with the
+  # configured openldap identity instead of inheriting entrypoint privileges.
   apt-get install --no-install-recommends -y \
     slapd \
     ldap-utils \
-    libsasl2-modules-gssapi-mit
+    libsasl2-modules-gssapi-mit \
+    util-linux
 
   # The GSSAPI package depends on the generic module bundle. Limit slapd to the
   # two mechanisms this image supports so that PLAIN and legacy mechanisms do
@@ -238,6 +244,7 @@ EOT
 EOF
 
 COPY image/ldifs /opt/ldifs
+COPY image/backup.sh /opt/backup.sh
 COPY image/run.sh /opt/run.sh
 COPY .shared/lib/bash-init.sh /opt/bash-init.sh
 

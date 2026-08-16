@@ -16,7 +16,7 @@
    1. [Transport Encryption (LDAPS/STARTTLS)](#transport-encryption)
    1. [Syncrepl over LDAPS](#syncrepl-ldaps)
    1. [Changing UID/GID of OpenLDAP service user](#uidgid)
-   1. [Periodic LDAP Backup](#backup)
+   1. [LDAP Backups](#backup)
    1. [Synchronizing timezone/time with docker host](#timesync)
    1. [Performance tuning](#performance-tuning)
    1. [Troubleshooting](#troubleshooting)
@@ -457,17 +457,50 @@ During each container start, the image checks the configured UID against the eff
 It checks the configured GID against the GID of the `openldap` group.
 If either value differs, the user UID or group GID is changed and `chown` on `/etc/ldap` and `/var/lib/ldap` is executed before the OpenLDAP service is started.
 
-### <a name="backup"></a>Periodic LDAP Backup
+### <a name="backup"></a>LDAP Backups
 
-This image automatically generates a daily LDIF export at `2 a.m.` to `/var/lib/ldap/data.ldif`.
+The image supports two automatic backup triggers:
 
-The following environment variables can be used to configure the automatic LDAP backup:
+- **Initial backup:** On the first start of a server that is not a syncrepl consumer, the image creates an LDIF export after setup is complete. If the export fails, the image retries it on the next start. A consumer skips this backup because its database may still be incomplete.
+- **Daily backup:** The image creates an LDIF export at `2 a.m.` by default. On a syncrepl consumer, daily backups begin after the initial refresh is complete.
+
+#### Configuration
+
+Use these environment variables to configure the backup schedule and destination:
+
 ```bash
-LDAP_BACKUP_TIME='02:00'  # Format is "HH:MM", i.e. 24-hour format with minute precision
+LDAP_BACKUP_TIME='02:00'  # 24-hour "HH:MM" format
 LDAP_BACKUP_FILE='/var/lib/ldap/data.ldif'
 ```
 
-To disable automatic backup set an empty value for the environment variable `LDAP_BACKUP_TIME`.
+`LDAP_BACKUP_FILE` applies to both initial and daily backups.
+Set `LDAP_BACKUP_TIME` to an empty value to disable only the daily backup.
+
+#### Destination requirements
+
+The backup destination must meet these requirements:
+
+- The parent directory must be writable by the effective UID and GID of the `openldap` user. This also applies when you use `LDAP_OPENLDAP_UID`, `LDAP_OPENLDAP_GID`, or a bind mount.
+- Other UIDs must not be able to replace entries in the backup path while an export is running. Use a directory controlled by root or `openldap`, or a sticky directory that protects entries owned by `openldap`.
+- The filesystem must preserve and report Unix ownership and permission bits. The image requires the private directory to be owned by `openldap` with mode `0700` or `2700`, and its marker and exports with mode `0600`.
+- If the destination already exists, the `openldap` user must be allowed to replace its directory entry. For example, a foreign-owned file in a sticky directory such as `/tmp` cannot be replaced even though the directory is writable.
+- Mount the parent directory instead of the individual backup file, because Docker does not allow the image to replace a file mount.
+
+#### Atomic publication and storage
+
+Each export is first written below a private directory beside `LDAP_BACKUP_FILE`, such as `.data.ldif.tmp` for the default backup name.
+This directory is reserved for the image; do not create it, store other files in it, or mount it separately.
+The image validates the directory and all of its contents before removing incomplete exports, including after a container restart.
+
+The private directory must use the same filesystem as `LDAP_BACKUP_FILE`.
+The complete export is moved atomically to the configured destination so readers cannot see a partial backup.
+If publication would cross filesystems, the export fails and the previous backup remains unchanged.
+If `LDAP_BACKUP_FILE` is a symbolic link, the image replaces the link itself and does not write to its target.
+The resulting backup is owned by `openldap` and has mode `0600`.
+
+Atomic replacement keeps the previous backup while the next complete export is written.
+The destination filesystem must therefore have enough free space for both LDIF files at the same time.
+With the default path, this capacity is shared with the live database in `/var/lib/ldap`; use a separately sized backup mount for large directories.
 
 ### <a name="timesync"></a>Synchronizing timezone/time with docker host
 

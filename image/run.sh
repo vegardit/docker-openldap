@@ -71,6 +71,11 @@ chown -R openldap:openldap /var/lib/ldap_orig || true
 mkdir -p /run/slapd
 chown -R openldap:openldap /run/slapd
 
+# Keep backup implementation separate while run.sh owns lifecycle ordering around
+# initialization, migrations, TLS reconciliation, and the final service start.
+# shellcheck disable=SC1091  # Not following: /opt/backup.sh is copied into the image
+source /opt/backup.sh
+
 #################################################################
 # Install TLS certificates if needed (must be before any slapd starts)
 #################################################################
@@ -140,7 +145,9 @@ function ldif() {
   )
 }
 
-function slapd() {
+# This helper owns only the local daemon used before the final service exec.
+# Its start/stop lifecycle must not acquire the production network listeners.
+function prestart_slapd() {
   local cmd="${1:-}"
   local -r RUNDIR="/run/slapd"
   # /run/slapd must remain service-writable for its socket. Keep root's default
@@ -149,7 +156,9 @@ function slapd() {
   local -r INIT_STATE_DIR="/run/slapd-init"
   local -r LOGFILE="${SLAPD_LOG_FILE:-$INIT_STATE_DIR/slapd.log}"
   local -r PIDFILE="${SLAPD_INIT_PIDFILE:-$INIT_STATE_DIR/slapd.pid}"
-  local -r URLS="ldap:/// ldapi:///${SLAPD_EXTRA_URLS:-}"
+  # Initialization and migration run before policy and TLS setup is complete.
+  # Keep the temporary daemon private; only the final slapd process opens LDAP
+  # and LDAPS network listeners.
   local -a dbg_opts=()
 
   # Debug levels for init runs (independent from final exec)
@@ -172,7 +181,7 @@ function slapd() {
       # Run in foreground (because of -d ...) and capture logs; background with &
       /usr/sbin/slapd \
         "${dbg_opts[@]}" \
-        -h "$URLS" \
+        -h "ldapi:///" \
         -u openldap \
         -g openldap \
         -F /etc/ldap/slapd.d \
@@ -449,11 +458,16 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     exit 1
   fi
 
+  # Reserve backup intent after validation but before RFC2307bis replacement or
+  # LDAP writes. A marker failure must not strand otherwise retryable volumes
+  # after initialization has already made non-idempotent changes.
+  mark_initial_ldap_backup_pending "$replication_role" || exit 1
+
   if [[ ${LDAP_INIT_RFC2307BIS_SCHEMA:-} == 1 ]]; then
     log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
     log INFO "Exporting initial slapd config..."
-    initial_sldapd_config=$(slapcat -n0)
+    initial_sldapd_config=$(/usr/sbin/slapcat -n0)
 
     log INFO "Delete initial slapd config..."
     find /etc/ldap/slapd.d/ -type f -delete
@@ -479,7 +493,7 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     chown openldap:openldap -R /etc/ldap/slapd.d
   fi
 
-  slapd start
+  prestart_slapd start
 
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/schema_ldapPublicKey.ldif
@@ -582,15 +596,7 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
   echo "$config_version" >"$initialized_file"
   rm -f /tmp/*.ldif
 
-  # Syncrepl starts asynchronously when the consumer config is committed, so
-  # this point cannot guarantee a complete replica. Let scheduled backups run
-  # after startup instead of publishing an empty or partial initial export.
-  if [[ $replication_role != consumer ]]; then
-    log INFO "Creating LDAP backup at [$LDAP_BACKUP_FILE]..."
-    slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
-  fi
-
-  slapd stop
+  prestart_slapd stop
 
 else
   # System is already initialized - check for migrations
@@ -605,7 +611,7 @@ else
   if [[ "$last_version" == "2.5" ]]; then
     log BOX "Migrating config to OpenLDAP 2.6..."
 
-    slapd start
+    prestart_slapd start
 
     # Find the actual ppolicy overlay DN (it might have an index like {0}ppolicy)
     ppolicy_dn=$(ldapsearch -H ldapi:/// -Y EXTERNAL -b "olcDatabase={1}mdb,cn=config" "(objectClass=olcPPolicyConfig)" dn 2>/dev/null | grep "^dn:" | head -1 | sed 's/^dn: //')
@@ -655,7 +661,7 @@ EOF
     echo "$config_version" > "$initialized_file"
 
     # Stop LDAP server after migrations
-    slapd stop
+    prestart_slapd stop
 
     log INFO "Configuration migration completed"
   elif [[ "$last_version" != "$config_version" ]]; then
@@ -666,14 +672,12 @@ EOF
   fi
 fi
 
-# Bootstrap variables disappear on normal restarts, so persisted olcSyncrepl is
-# the authoritative indication that this database still has a consumer engine.
-# Avoid grep -q: its early exit can SIGPIPE slapcat, and pipefail would then hide
-# a real match by making the condition fail.
-is_syncrepl_consumer=false
-if slapcat -n 0 -o ldif-wrap=no | grep -F 'olcSyncrepl:' >/dev/null; then
-  is_syncrepl_consumer=true
-fi
+# Read the final persisted role after migrations; both initial and periodic
+# backups must make decisions from the configuration slapd will actually use.
+load_ldap_backup_state || exit 1
+# Reclaim only previously initialized backup state. This remains best-effort so
+# disabling the daily scheduler cannot make LDAP depend on its backup destination.
+recover_interrupted_ldap_backup "${LDAP_BACKUP_FILE:-}"
 
 # Bootstrap inputs may be omitted after initialization, but the built-in
 # consumer persists this absolute CA path in cn=config. Check it before slapd
@@ -681,7 +685,7 @@ fi
 # Avoid grep -q here: its early exit can SIGPIPE slapcat, and pipefail would then
 # hide a real match by making the condition fail.
 if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
-    slapcat -n 0 -o ldif-wrap=no |
+    /usr/sbin/slapcat -n 0 -o ldif-wrap=no |
       grep -F 'olcSyncrepl:' |
       grep -F 'tls_cacert=/etc/ldap/certs/ca.crt' >/dev/null; then
   log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
@@ -757,124 +761,26 @@ EOF
 fi
 
 # apply TLS configuration
-slapd start
+prestart_slapd start
 if [[ ${LDAP_TLS_ENABLED} == true ]]; then
   ldif modify -Y EXTERNAL /tmp/tls.ldif
 else
   ldif modify -c -Y EXTERNAL /tmp/tls.ldif || true  # ignore "ldap_modify: No such attribute (16)"
 fi
 
+# The first export waits until initialization and TLS reconciliation are complete
+# so it describes the same configuration that the final server will use.
+create_initial_ldap_backup
+
 rm -f /tmp/tls.ldif
 
-slapd stop
+prestart_slapd stop
 
 
 #################################################################
 # Configure background task for LDAP backup
 #################################################################
-if [[ -n ${LDAP_BACKUP_TIME:-} ]]; then
-
-  if [[ -z ${LDAP_BACKUP_FILE:-} ]]; then
-    log ERROR "LDAP_BACKUP_FILE variable is not set!"
-    exit 1
-  fi
-
-  log BOX "Configuring LDAP backup task to run daily: time=[${LDAP_BACKUP_TIME}] file=[$LDAP_BACKUP_FILE]..."
-  if [[ ! $LDAP_BACKUP_TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
-    log ERROR "The configured value [$LDAP_BACKUP_TIME] for LDAP_BACKUP_TIME is not in the expected 24-hour format [hh:mm]!"
-    exit 1
-  fi
-
-  # Using the destination itself as the writeability probe would publish an
-  # empty file before a new consumer has received its first replicated entry.
-  # A temporary sibling exercises the same directory without resembling a backup.
-  if [[ -e $LDAP_BACKUP_FILE || -L $LDAP_BACKUP_FILE ]]; then
-    touch "$LDAP_BACKUP_FILE"
-  else
-    backup_write_probe=$(mktemp "$(dirname -- "$LDAP_BACKUP_FILE")/.ldap-backup-write-test.XXXXXX")
-    rm -f "$backup_write_probe"
-  fi
-
-  function backup_ldap() {
-    if [[ $is_syncrepl_consumer == true ]]; then
-      log INFO "Waiting for the initial syncrepl refresh before enabling periodic LDAP backups..."
-      # The worker starts immediately before the final slapd process. Wait for
-      # its local socket so startup connection failures are not mistaken for an
-      # incomplete syncrepl refresh.
-      while ! ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null 2>&1; do
-        sleep 1s
-      done
-
-      local backup_suffix
-      local backup_suffix_ldif
-      # Bootstrap variables may be omitted or changed on a normal restart, so
-      # use the suffix that is authoritative in the persisted configuration.
-      if ! backup_suffix_ldif=$(
-        ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
-          -b 'olcDatabase={1}mdb,cn=config' -s base '(objectClass=*)' olcSuffix |
-          sed -n '/^olcSuffix: /p; /^olcSuffix:: /p'
-      ); then
-        log ERROR "Cannot determine the persisted MDB suffix required to verify the initial syncrepl refresh."
-        return 1
-      fi
-      case "$backup_suffix_ldif" in
-        'olcSuffix: '*) backup_suffix=${backup_suffix_ldif#olcSuffix: } ;;
-        'olcSuffix:: '*)
-          # LDIF base64-encodes values that are not safe ASCII. Decode that
-          # representation so non-ASCII organization DNs remain valid search bases.
-          if ! backup_suffix=$(printf '%s' "${backup_suffix_ldif#olcSuffix:: }" | base64 -d); then
-            log ERROR "Cannot decode the persisted MDB suffix required to verify the initial syncrepl refresh."
-            return 1
-          fi
-          ;;
-        *)
-          log ERROR "Cannot determine the persisted MDB suffix required to verify the initial syncrepl refresh."
-          return 1
-          ;;
-      esac
-
-      # Initial-refresh entries carry no synchronization cookie. OpenLDAP writes
-      # contextCSN after the refresh completes, so its presence distinguishes a
-      # coherent replica from an empty or partially populated database. Query
-      # only the suffix entry; repeatedly exporting the database makes startup
-      # cost grow with the number of entries already received.
-      while true; do
-        local refresh_state
-        local refresh_status
-        if refresh_state=$(
-          ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
-            -b "$backup_suffix" -s base '(contextCSN=*)' contextCSN 2>&1
-        ); then
-          if [[ $refresh_state == contextCSN:\ * || $refresh_state == *$'\ncontextCSN: '* ]]; then
-            break
-          fi
-        else
-          refresh_status=$?
-          # LDAP result 32 means that syncrepl has not created the suffix entry
-          # yet. Other errors are configuration failures, not a reason to wait
-          # forever while silently disabling backups.
-          if (( refresh_status != 32 )); then
-            log ERROR "Cannot query syncrepl refresh state for [$backup_suffix]: $refresh_state"
-            return 1
-          fi
-        fi
-        sleep 10s
-      done
-      log INFO "Initial syncrepl refresh completed; enabling periodic LDAP backups."
-    fi
-
-    while true; do
-      while [[ ${LDAP_BACKUP_TIME} != "$(date +%H:%M)" ]]; do
-        sleep 10s
-      done
-      log INFO "Creating periodic LDAP backup at [$LDAP_BACKUP_FILE]..."
-      slapcat -n 1 -l "$LDAP_BACKUP_FILE" || true
-      sleep 23h
-    done
-  }
-
-  backup_ldap &
-fi
+configure_ldap_backup || exit 1
 
 
 #################################################################
