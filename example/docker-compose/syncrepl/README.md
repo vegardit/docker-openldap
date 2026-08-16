@@ -10,16 +10,12 @@ Install Docker Compose and OpenSSL, then run these commands from this directory:
 
 ```sh
 sh ./generate-secrets.sh
-export LDAP_PROVIDER_ADMIN_PASSWORD='choose-a-provider-password'
-export LDAP_CONSUMER_ADMIN_PASSWORD='choose-a-different-consumer-password'
 docker compose up -d
 ```
 
-Keep both admin-password variables exported for every later `docker compose` command; Compose validates them whenever it loads this file.
-
 The generator never overwrites existing secrets or certificates. If the initial generation stops partway through, remove its incomplete `tls/` directory and `secrets/ldap-replication-password` before trying again. TLS files can be rotated together and both nodes restarted because their persisted configuration stores file paths, not the CA contents. Changing the replication password after initialization requires updating the provider's `uid=replicator,DC=example,DC=com` entry and the consumer's `olcSyncrepl` credential; changing the secret file or recreating only config volumes is insufficient. To discard the example data instead, use the destructive reset below and replace the secret before restarting. Keep `tls/ca.key` private; Compose does not mount it into a container.
 
-The Compose secret name places the shared password at the image default, `/run/secrets/ldap-replication-password`. TLS auto-detection enables TLS after it finds each node's certificate and key. Only the consumer mounts `ca.crt`: it uses that CA for syncrepl and LDAP CLI commands. The provider accepts the consumer's simple-bind password and does not request a client certificate.
+The Compose secret names place the shared passwords at the image default,  `/run/secrets/ldap-admin-password` and `/run/secrets/ldap-replication-password`, respectively. TLS auto-detection enables TLS after it finds each node's certificate and key. Only the consumer mounts `ca.crt`: it uses that CA for syncrepl and LDAP CLI commands. The provider accepts the consumer's simple-bind password and does not request a client certificate.
 
 No startup ordering is required. The consumer retries while the provider initializes.
 

@@ -5,18 +5,20 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$script_dir"
 
+admin_secret=secrets/ldap-admin-password
 replication_secret=secrets/ldap-replication-password
 
 # Refuse to overwrite or combine credential material from separate runs. If the
 # initial generation fails, remove its partial output explicitly before retrying.
-if [ -e tls ] || [ -L tls ] || [ -e "$replication_secret" ] || [ -L "$replication_secret" ]; then
-  echo "Refusing to overwrite existing TLS or replication-secret material." >&2
+if [ -e tls ] || [ -L tls ] || [ -e "$replication_secret" ] || [ -L "$replication_secret" ] || [ -e "$admin_secret" ] || [ -L "$admin_secret" ]; then
+  echo "Refusing to overwrite existing TLS, replication-secret, or admin-secret material." >&2
   exit 1
 fi
 
 umask 077
 mkdir -p secrets
 mkdir tls
+openssl rand -hex 32 >"$admin_secret"
 openssl rand -hex 32 >"$replication_secret"
 
 # Git Bash rewrites slash-prefixed arguments as Windows paths unless /CN= is

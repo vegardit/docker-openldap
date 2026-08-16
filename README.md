@@ -100,6 +100,22 @@ Environment variables can for example be set in one of the following ways:
      vegardit/openldap
    ```
 
+Root user password can also be provided as a secret, allowing a more secure way, as environmental variables may be able to be enumerated on the host via /proc/.
+The default secret name, _ldap-admin-password_, is detected automatically. In case of other secret name, you must also provide `LDAP_INIT_ROOT_USER_PW_FILE`
+environmental variable pointing to the secret file (typiclly unser /run/secrets).
+Whe using secret, one must use `docker service` rather than `docker run`:
+
+```sh
+printf "secret_password" | docker secret create ldap-admin-password -
+docker service create \
+  --name openldap \
+  ... \
+  --secret ldap-admin-password \
+  --mount type=bind,source=/my_data/ldap/var,destination=/var/lib/ldap
+  --mount type=bind,source=/my_data/ldap/etc,destination=/etc/ldap/slapd.d
+  vegardit/openldap
+```
+
 #### Supported initialization mounts
 
 These are the supported mounts for bootstrap customization. Persistent volumes, TLS files, and replication secrets are described in their own sections.

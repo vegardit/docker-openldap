@@ -292,6 +292,34 @@ if [ ! -e "$initialized_file" ]; then
     exit 1
   fi
 
+  # Root user password can also be provided as a secret, which overrides the env var.
+  # Compose mounts a secret with this name at the conventional path. 
+  root_user_password_file=${LDAP_INIT_ROOT_USER_PW_FILE:-/run/secrets/ldap-admin-password}
+  if [[ -r $root_user_password_file ]]; then
+    log INFO "LDAP_INIT_ROOT_USER_PW_FILE [$root_user_password_file] is provided and readable, overriding LDAP_INIT_ROOT_USER_PW"
+    LDAP_INIT_ROOT_USER_PW_BCP=$LDAP_INIT_ROOT_USER_PW
+    LDAP_INIT_ROOT_USER_PW=$(<"$root_user_password_file")
+  fi
+
+  # Command substitution strips the LF from a Docker secret but leaves the
+  # CR from a Windows CRLF terminator. Remove only that trailing CR; the
+  # validation below still rejects embedded line breaks.
+  LDAP_INIT_ROOT_USER_PW=${LDAP_INIT_ROOT_USER_PW%$'\r'}
+  if [[ -z $LDAP_INIT_ROOT_USER_PW ]]; then
+    log WARNING "LDAP_INIT_ROOT_USER_PW_FILE must not be empty -> falling back to LDAP_INIT_ROOT_USER_PW"
+    LDAP_INIT_ROOT_USER_PW="$LDAP_INIT_ROOT_USER_PW_BCP"
+  fi
+  # The consumer credential is persisted inside a quoted olcSyncrepl value.
+  # Reject only characters that could escape that field or split the LDIF;
+  # ordinary spaces and punctuation remain valid password characters.
+  if [[ $LDAP_INIT_ROOT_USER_PW == *$'\n'* ||
+        $LDAP_INIT_ROOT_USER_PW == *$'\r'* ||
+        $LDAP_INIT_ROOT_USER_PW == *\"* ||
+        $LDAP_INIT_ROOT_USER_PW == *\\* ]]; then
+    log WARNING "The root user password must not contain line breaks, quotes, or backslashes -> falling back to LDAP_INIT_ROOT_USER_PW"
+    LDAP_INIT_ROOT_USER_PW="$LDAP_INIT_ROOT_USER_PW_BCP"
+  fi
+  
   if [[ -z ${LDAP_INIT_ROOT_USER_PW:-} ]]; then
     log ERROR "LDAP_INIT_ROOT_USER_PW variable is not set!"
     exit 1

@@ -4,12 +4,12 @@ services:
     hostname: provider
     environment:
       LDAP_INIT_ORG_DN: DC=example,DC=com
-      LDAP_INIT_ROOT_USER_PW: ${LDAP_PROVIDER_ADMIN_PASSWORD:?Set LDAP_PROVIDER_ADMIN_PASSWORD}
       LDAP_INIT_REPLICATION_ROLE: provider
       # The consumer already authenticates with simple bind. Requesting its TLS
       # certificate would add an unrelated second identity requirement.
       LDAP_TLS_VERIFY_CLIENT: never
     secrets:
+      - ldap-admin-password
       - ldap-replication-password
     volumes:
       - provider-config:/etc/ldap/slapd.d
@@ -22,13 +22,13 @@ services:
     hostname: consumer
     environment:
       LDAP_INIT_ORG_DN: DC=example,DC=com
-      LDAP_INIT_ROOT_USER_PW: ${LDAP_CONSUMER_ADMIN_PASSWORD:?Set LDAP_CONSUMER_ADMIN_PASSWORD}
       LDAP_INIT_REPLICATION_ROLE: consumer
       LDAP_INIT_REPLICATION_PROVIDER_URI: ldaps://provider
       # docker compose exec inherits the container environment. OpenLDAP clients
       # verify certificates by default, so only point them at this example's CA.
       LDAPTLS_CACERT: /etc/ldap/certs/ca.crt
     secrets:
+      - ldap-admin-password
       - ldap-replication-password
     volumes:
       - consumer-config:/etc/ldap/slapd.d
@@ -41,6 +41,8 @@ services:
 
 secrets:
   # The secret name intentionally matches the image's default replication path.
+  ldap-admin-password:
+    file: ./secrets/ldap-admin-password
   ldap-replication-password:
     file: ./secrets/ldap-replication-password
 
