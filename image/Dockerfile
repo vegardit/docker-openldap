@@ -11,96 +11,6 @@
 ARG BASE_IMAGE=debian:trixie-slim
 
 #############################################################
-# build pqchecker
-#############################################################
-
-# https://github.com/hadolint/hadolint/wiki/DL3006 Always tag the version of an image explicitly
-# hadolint ignore=DL3006
-FROM ${BASE_IMAGE} AS pqchecker-build
-
-ARG DEBIAN_FRONTEND=noninteractive
-ARG LC_ALL=C
-
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-
-# https://github.com/hadolint/hadolint/wiki/DL3008 Pin versions
-# hadolint ignore=DL3008
-RUN <<EOF
-  set -x
-  apt-get update
-  apt-get install --no-install-recommends -y \
-    build-essential \
-    ca-certificates \
-    git
-
-  git config --global advice.detachedHead false
-  git config --global core.sparseCheckout true
-  git config --global init.defaultBranch main
-EOF
-
-WORKDIR /opt/openldap-src
-RUN <<EOF
-  git clone --depth 1 --branch OPENLDAP_REL_ENG_2_6 https://github.com/openldap/openldap.git .
-  ./configure
-  make depend
-EOF
-
-WORKDIR /opt/jni-headers
-
-ENV JVM_DIR=/usr/lib/jvm/openjdk11
-
-RUN <<EOF
-  set -x
-
-  git clone --depth 1 --filter=blob:none --no-checkout --branch jdk-11-ga https://github.com/openjdk/jdk.git .
-  git sparse-checkout init --cone
-  git sparse-checkout set \
-      src/java.base/share/native/include/jni.h \
-      src/java.base/unix/native/include/jni_md.h
-  git checkout
-
-  mkdir -p "$JVM_DIR/include/linux"
-  cp src/java.base/share/native/include/jni.h   "$JVM_DIR/include/"
-  cp src/java.base/unix/native/include/jni_md.h "$JVM_DIR/include/linux/"
-EOF
-
-WORKDIR /opt/pqchecker
-
-# NOTE: Hadolint 2.15 resets its tracked shell after ENV; remove this once it preserves the Bash SHELL.
-# https://github.com/hadolint/hadolint/issues/1241
-# hadolint ignore=SC3010
-RUN <<EOF
-  set -eu
-
-  # auto-detect JAVA_HOME from wherever jni.h landed
-  JNI_HDR=$(find /usr/lib/jvm -path '*/include/jni.h' -print -quit)
-  if [[ -z $JNI_HDR ]]; then
-    echo "ERROR: jni.h not found under /usr/lib/jvm – cannot set JAVA_HOME" >&2
-    exit 1
-  fi
-  JAVA_HOME=$(dirname "$(dirname "$JNI_HDR")")
-  echo "Detected JAVA_HOME=$JAVA_HOME"
-  export JAVA_HOME
-
-  set -x
-  git init .
-  # git remote add origin https://bitbucket.org/ameddeb/pqchecker.git
-  git remote add origin https://github.com/pqchecker/pqchecker.git
-  git fetch --depth 1 origin 2813c1922c4233d72066201d11b6b4ad4f61239d
-  git checkout FETCH_HEAD
-
-  bash ./adjustdate.bash
-  ./configure \
-      LDAPSRC=/opt/openldap-src \
-      JAVAHOME="$JAVA_HOME" \
-      libdir=/usr/lib/ldap \
-      PARAMDIR=/etc/ldap/pqchecker
-  make
-
-EOF
-
-
-#############################################################
 # build final image
 #############################################################
 
@@ -115,9 +25,6 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ARG INSTALL_SUPPORT_TOOLS=0
 ARG BASE_LAYER_CACHE_KEY
-
-COPY --from=pqchecker-build /opt/pqchecker/src/.libs/pqchecker.so /usr/lib/ldap/pqchecker.so
-COPY --from=pqchecker-build /opt/pqchecker/pqparams.dat           /etc/ldap/pqchecker/pqparams.dat
 
 # https://github.com/hadolint/hadolint/wiki/DL3008 Pin versions
 # hadolint ignore=DL3008,SC2016
@@ -137,14 +44,22 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
   echo 'slapd slapd/root_password_again password whatever' | debconf-set-selections
   # ldap-utils provides the LDAP client commands used for bootstrap changes,
   # migrations, readiness checks, and syncrepl state inspection.
+  # slapd-contrib provides Debian's packaged PPM password-quality module.
   # libsasl2-modules-gssapi-mit enables the GSSAPI mechanism advertised by slapd.
   # util-linux provides setpriv, which runs backup filesystem operations with the
   # configured openldap identity instead of inheriting entrypoint privileges.
   apt-get install --no-install-recommends -y \
     slapd \
+    slapd-contrib \
     ldap-utils \
     libsasl2-modules-gssapi-mit \
     util-linux
+
+  # Existing cn=config volumes may still use the old path. Keep it working until
+  # the entrypoint replaces it with ppm.so. Fail the build here if Debian changes
+  # the package layout; ln alone would silently create a dangling compatibility link.
+  test -e /usr/lib/ldap/ppm.so
+  ln -s ppm.so /usr/lib/ldap/pqchecker.so
 
   # The GSSAPI package depends on the generic module bundle. Limit slapd to the
   # two mechanisms this image supports so that PLAIN and legacy mechanisms do
@@ -213,6 +128,8 @@ ENV \
   LDAP_INIT_PPOLICY_MAX_FAILURES=3 \
   LDAP_INIT_PPOLICY_LOCKOUT_DURATION=300 \
   LDAP_INIT_RFC2307BIS_SCHEMA=0 \
+  # Do not set a default for LDAP_PPOLICY_PPM_CONFIG. The entrypoint must tell
+  # unset (use the legacy default) from empty (disable automatic updates).
   LDAP_PPOLICY_PQCHECKER_RULE='0|01010101' \
   LDAP_NOFILE_LIMIT=1024 \
   LDAP_LOG_LEVELS='Config Stats' \
@@ -245,6 +162,7 @@ EOF
 
 COPY image/ldifs /opt/ldifs
 COPY image/backup.sh /opt/backup.sh
+COPY image/ppm.sh /opt/ppm.sh
 COPY image/run.sh /opt/run.sh
 COPY .shared/lib/bash-init.sh /opt/bash-init.sh
 

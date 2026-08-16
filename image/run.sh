@@ -260,6 +260,10 @@ function prestart_slapd() {
 
 initialized_file=/etc/ldap/slapd.d/initialized
 config_version="2.6"
+# shellcheck disable=SC1091  # Image-owned module copied to this fixed path.
+source /opt/ppm.sh
+ppm_configure || exit 1
+
 if [ ! -e "$initialized_file" ]; then
   log BOX "Applying initial configuration..."
   function substr_before() {
@@ -600,76 +604,7 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
 
 else
   # System is already initialized - check for migrations
-  last_version=$(cat "$initialized_file")
-
-  # Handle legacy format (just "1" means pre-versioning, treat as 2.5)
-  if [[ "$last_version" == "1" ]]; then
-    last_version="2.5"
-  fi
-
-  # Check if we need to migrate from 2.5 to 2.6
-  if [[ "$last_version" == "2.5" ]]; then
-    log BOX "Migrating config to OpenLDAP 2.6..."
-
-    prestart_slapd start
-
-    # Find the actual ppolicy overlay DN (it might have an index like {0}ppolicy)
-    ppolicy_dn=$(ldapsearch -H ldapi:/// -Y EXTERNAL -b "olcDatabase={1}mdb,cn=config" "(objectClass=olcPPolicyConfig)" dn 2>/dev/null | grep "^dn:" | head -1 | sed 's/^dn: //')
-
-    if [[ -z "$ppolicy_dn" ]]; then
-      log WARN "ppolicy overlay not found in configuration, skipping password policy migration"
-    else
-      log INFO "Found ppolicy overlay at: $ppolicy_dn"
-
-      # Check if ppolicy overlay already has the new configuration
-      if ldapsearch -H ldapi:/// -Y EXTERNAL -b "$ppolicy_dn" -s base "(objectClass=*)" olcPPolicyCheckModule 2>/dev/null | grep -q "olcPPolicyCheckModule"; then
-        log INFO "Password policy overlay already configured for 2.6, skipping migration"
-      else
-        # Check for legacy pwdCheckModule entries
-        has_legacy_config=false
-        if ldapsearch -H ldapi:/// -Y EXTERNAL -b "${LDAP_INIT_ORG_DN:-DC=example,DC=com}" "(pwdCheckModule=*)" pwdCheckModule 2>/dev/null | grep -q "pwdCheckModule"; then
-          has_legacy_config=true
-          log INFO "Found legacy pwdCheckModule configuration in password policy entries"
-        fi
-
-        # Add new overlay configuration
-        log INFO "Adding OpenLDAP 2.6 password policy overlay configuration..."
-        # This generated LDIF is consumed once. Stdin avoids giving root a fixed
-        # pathname in /tmp that the openldap account can replace between starts.
-        if {
-          cat <<EOF
-dn: $ppolicy_dn
-changetype: modify
-add: olcPPolicyCheckModule
-olcPPolicyCheckModule: /usr/lib/ldap/pqchecker.so
-EOF
-        } | ldapmodify -H ldapi:/// -Y EXTERNAL 2>&1 | log INFO; then
-          log INFO "Successfully migrated password policy overlay configuration"
-          if [[ $has_legacy_config == true ]]; then
-            log WARN "Legacy pwdCheckModule entries found in password policy entries."
-            log WARN "These are now ignored in OpenLDAP 2.6 and can be removed manually if desired."
-            log WARN "The password checking functionality is now handled by the overlay configuration."
-          fi
-        else
-          log ERROR "Failed to apply password policy overlay migration"
-          exit 1
-        fi
-      fi
-    fi
-
-    # Update version in initialized file
-    echo "$config_version" > "$initialized_file"
-
-    # Stop LDAP server after migrations
-    prestart_slapd stop
-
-    log INFO "Configuration migration completed"
-  elif [[ "$last_version" != "$config_version" ]]; then
-    log WARN "Unknown configuration version: $last_version (expected: $config_version)"
-    log WARN "Skipping migrations - manual intervention may be required"
-  else
-    log INFO "Configuration is up to date (version: $config_version)"
-  fi
+  ppm_detect_migration "$initialized_file" "$config_version" || exit 1
 fi
 
 # Read the final persisted role after migrations; both initial and periodic
@@ -678,6 +613,10 @@ load_ldap_backup_state || exit 1
 # Reclaim only previously initialized backup state. This remains best-effort so
 # disabling the daily scheduler cannot make LDAP depend on its backup destination.
 recover_interrupted_ldap_backup "${LDAP_BACKUP_FILE:-}"
+
+# PPM classifies only olcDatabase={1}mdb. Reusing the broader backup flag here
+# would let an unrelated custom consumer suppress updates to image-managed data.
+ppm_prepare_reconciliation || exit 1
 
 # Bootstrap inputs may be omitted after initialization, but the built-in
 # consumer persists this absolute CA path in cn=config. Check it before slapd
@@ -691,9 +630,6 @@ if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
   log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
   exit 1
 fi
-
-echo "$LDAP_PPOLICY_PQCHECKER_RULE" >/etc/ldap/pqchecker/pqparams.dat
-
 
 #################################################################
 # TLS configuration
@@ -760,16 +696,20 @@ EOF
 
 fi
 
-# apply TLS configuration
+# PPM and TLS reconciliation both require the local-only pre-start server. Keep
+# them in one daemon lifetime so migration does not briefly expose public LDAP.
 prestart_slapd start
+ppm_reconcile || exit 1
 if [[ ${LDAP_TLS_ENABLED} == true ]]; then
   ldif modify -Y EXTERNAL /tmp/tls.ldif
 else
   ldif modify -c -Y EXTERNAL /tmp/tls.ldif || true  # ignore "ldap_modify: No such attribute (16)"
 fi
 
+ppm_commit_migration "$initialized_file" "$config_version" || exit 1
+
 # The first export waits until initialization and TLS reconciliation are complete
-# so it describes the same configuration that the final server will use.
+# so it describes the same PPM and TLS state that the final server will use.
 create_initial_ldap_backup
 
 rm -f /tmp/tls.ldif

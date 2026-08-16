@@ -11,7 +11,7 @@
    1. [Initial configuration](#initial-configuration)
    1. [Additional schemas](#additional-schemas)
    1. [Initial LDAP tree](#initial-ldap-tree)
-   1. [Customizing the Password Policy](#ppolicy)
+   1. [Configuring the Password Policy](#ppolicy)
    1. [Kerberos authentication (GSSAPI)](#kerberos-authentication)
    1. [Transport Encryption (LDAPS/STARTTLS)](#transport-encryption)
    1. [Syncrepl over LDAPS](#syncrepl-ldaps)
@@ -178,7 +178,7 @@ Do not use it to change `cn=config`, add schemas, or load modules.
 Changes are not transactional: if one file fails, changes made by earlier files remain.
 Fix the file and retry with clean configuration and data volumes.
 
-### <a name="ppolicy"></a>Customizing the Password Policy
+### <a name="ppolicy"></a>Configuring the Password Policy
 
 On **initial** container launch, the [password policy](https://www.openldap.org/doc/admin24/overlays.html#Password%20Policies) is imported from [/opt/ldifs/init_org_ppolicy.ldif](image/ldifs/init_org_ppolicy.ldif).
 
@@ -193,27 +193,101 @@ LDAP_INIT_PPOLICY_LOCKOUT_DURATION=300
 
 If more customizations are required, simply mount a custom policy file at `/opt/ldifs/init_org_ppolicy.ldif` **before** initial container launch.
 
-**Password Quality Checker:**
+#### Password quality checking with PPM
 
-[pqChecker](https://www.meddeb.net/pqchecker/) is configured as the default password quality checker using the rule `0|01010101` with
-the following meaning:
+The image installs Debian's [PPM password policy module](https://manpages.debian.org/trixie/slapd-contrib/slapm-ppm.5.en.html) and enables it in the built-in password policy.
+No additional setting is required. By default, the image converts `LDAP_PPOLICY_PQCHECKER_RULE=0|01010101` to the following PPM rules:
 
 |Pos. |Value  |Effective Rule
 |----:|:-----:|:----------
-|0-1  | `0\|` |Don't broadcast passwords.
-|2-4  | `01`  |Minimum 1 uppercase character.
-|5-6  | `01`  |Minimum 1 lowercase character.
-|7-8  | `01`  |Minimum 1 digit.
-|9-10 | `01`  |Minimum 1 special character.
-|11-..| empty | No characters are disallowed in passwords.
+|0-1  | `0\|` |Use local checking. This prefix is optional.
+|2-3  | `01`  |Minimum 1 uppercase character.
+|4-5  | `01`  |Minimum 1 lowercase character.
+|6-7  | `01`  |Minimum 1 digit.
+|8-9  | `01`  |Minimum 1 special character.
+|10-..| empty |Allow all characters in passwords.
 
-The pqChecker rule syntax is explained here in more detail: https://www.meddeb.net/pqchecker/?Idx=2
-
-A custom rule can be provided via an environment variable, e.g.:
+To keep using the legacy syntax with a custom rule, set the environment variable directly:
 
 ```sh
 LDAP_PPOLICY_PQCHECKER_RULE='0|01020101@!+-#'
 ```
+
+Each of the four counts must contain two decimal digits. The special-character class contains printable ASCII punctuation.
+Any extra non-whitespace characters after the counts are forbidden in passwords.
+PPM does not support the old `1|` broadcast mode. The image rejects this mode instead of silently changing its behavior.
+
+To use native PPM syntax instead, set `LDAP_PPOLICY_PPM_CONFIG`. This setting takes precedence over `LDAP_PPOLICY_PQCHECKER_RULE`.
+The image keeps the text unchanged and handles the base64 encoding required by `pwdCheckModuleArg`:
+
+```yaml
+services:
+  openldap:
+    environment:
+      LDAP_PPOLICY_PPM_CONFIG: |-
+        minQuality 4
+        forbiddenChars @
+```
+
+`docker run --env-file` does not support multiline values. Use a Compose YAML block as shown above, or load a mounted file from `INIT_SH_FILE`:
+
+```sh
+LDAP_PPOLICY_PPM_CONFIG=$(</mnt/ppm.conf)
+```
+
+The image passes native PPM directives through unchanged. PPM reads them when a password is changed.
+
+#### Applying PPM settings
+
+On every start, a standalone server or replication provider updates each `pwdPolicyChecker` entry when its ppolicy overlay uses the image-managed PPM or still references pqChecker.
+
+Automatic updates do not use the LDAP administrator password, so you do not need to provide that password on later starts.
+When automatic updates are enabled, the image adds two permanent, local-only maintenance ACLs during the first reconciliation, including the initial start of a new volume.
+The ACLs are inserted at the start of `olcAccess` on `olcDatabase={1}mdb`:
+
+- Container root over `ldapi:///` can write `entry` and `objectClass`.
+  Automatic updates need these attributes to find policies.
+  The rule uses `write` instead of `read` so existing add, delete, rename, and object-class operations are not reduced to read-only access.
+- The same local identity can write `pwdUseCheckModule` and `pwdCheckModuleArg` on `pwdPolicyChecker` entries.
+
+Both ACLs require the root peercred DN and the local `ldapi:///` socket.
+LDAP and LDAPS network clients cannot use them.
+The ACLs remain in `cn=config` because automatic policy updates run on every writer start.
+
+An explicit empty value disables automatic updates.
+For example, use `LDAP_PPOLICY_PPM_CONFIG: ""` in Compose or `docker run -e LDAP_PPOLICY_PPM_CONFIG=`.
+Leaving the variable unset is different: the image uses the default legacy rule.
+
+|Configuration |Behavior
+|--------------|--------
+|`LDAP_PPOLICY_PPM_CONFIG` is not empty |Apply the native PPM text. This setting takes precedence over the legacy rule.
+|`LDAP_PPOLICY_PPM_CONFIG` is empty |Disable automatic updates, even though the image has a nonempty legacy default. On a fresh volume, the built-in policy has no `pwdUseCheckModule` or `pwdCheckModuleArg`.
+|`LDAP_PPOLICY_PPM_CONFIG` is unset and `LDAP_PPOLICY_PQCHECKER_RULE` is not empty |Translate the legacy rule to PPM text and apply it.
+|`LDAP_PPOLICY_PPM_CONFIG` is unset and `LDAP_PPOLICY_PQCHECKER_RULE` is empty |Disable normal updates. Existing pqChecker configurations are handled as described below.
+
+- Automatic updates leave policy attributes unchanged when the overlay uses another custom password check module.
+- Only the ppolicy overlay below the built-in `olcDatabase={1}mdb` is managed.
+  Ppolicy overlays on custom databases are ignored.
+- The image adds `pwdUseCheckModule: TRUE` only when the attribute is missing.
+  An explicit `FALSE` therefore disables PPM for that policy. The image still updates `pwdCheckModuleArg`, so enabling PPM later uses the current configuration.
+- Replication consumers do not write policy data; they receive the provider's values through syncrepl.
+- Automatic updates support only the image's built-in single-writer replication.
+  For a custom multi-provider setup, set `LDAP_PPOLICY_PPM_CONFIG` to an empty value and keep the native PPM attributes consistent through replication.
+
+Setting `LDAP_PPOLICY_PPM_CONFIG` to an empty value stops later automatic updates, but it does not remove an existing `pwdUseCheckModule: TRUE`.
+Set that policy attribute to `FALSE` to disable PPM for that policy.
+Other password-policy rules remain active.
+
+#### Existing pqChecker configurations
+
+When stored configuration still references `/usr/lib/ldap/pqchecker.so`, startup does the following:
+
+- Replace `olcPPolicyCheckModule` with `/usr/lib/ldap/ppm.so`.
+  A compatibility symlink lets slapd start long enough to update the stored configuration; the pqChecker binary is no longer included.
+- With an explicitly empty `LDAP_PPOLICY_PPM_CONFIG`, leave existing policy attributes unchanged.
+- If `LDAP_PPOLICY_PPM_CONFIG` is unset and `LDAP_PPOLICY_PQCHECKER_RULE` is empty, add the old default rule only where PPM policy attributes are missing.
+  Existing native PPM values and explicit `pwdUseCheckModule: FALSE` values remain unchanged.
+- Stop startup if an unknown configuration version still references the old path, because its pqChecker arguments cannot safely be used as PPM configuration.
 
 ### <a name="kerberos-authentication"></a>Kerberos authentication (GSSAPI)
 
@@ -528,6 +602,8 @@ services:
 The database indexes configured during initial container launch are imported from [/opt/ldifs/init_mdb_indexes.ldif](image/ldifs/init_mdb_indexes.ldif).
 
 To use other indexes, mount a custom file at that path **before** initial container launch.
+Custom definitions must retain an equality index for `objectClass`, for example `olcDbIndex: objectClass pres,eq`.
+PPM reconciliation searches `pwdPolicyChecker` entries by object class on every writer start; without that index, the search scans the complete directory.
 
 #### Memory usage
 
