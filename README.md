@@ -439,9 +439,9 @@ LDAP traffic can be encrypted in **two** complementary ways:
         traefik.enable: "true"
         traefik.tcp.routers.ldap.rule: HostSNI(`ldap.example.com`)
         traefik.tcp.routers.ldap.entryPoints: ldaps636 # expose externally on port 636
-        traefik.tcp.routers.ldap.tls.certresolver=lets_encrypt
+        traefik.tcp.routers.ldap.tls.certresolver: lets_encrypt
         traefik.tcp.routers.ldap.service: ldap
-        traefik.tcp.services.ldap.loadbalancer.server.port=389
+        traefik.tcp.services.ldap.loadbalancer.server.port: 389
 
     traefik:
       image: traefik:latest # https://hub.docker.com/_/traefik?tab=tags
