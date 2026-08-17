@@ -289,6 +289,10 @@ When stored configuration still references `/usr/lib/ldap/pqchecker.so`, startup
   Existing native PPM values and explicit `pwdUseCheckModule: FALSE` values remain unchanged.
 - Stop startup if an unknown configuration version still references the old path, because its pqChecker arguments cannot safely be used as PPM configuration.
 
+A persisted configuration without a ppolicy overlay is also supported.
+During migration from 2.5, the configured PPM settings can still update existing `pwdPolicyChecker` entries, but version migration does not create an overlay.
+If an overlay is added later, it remains operator-managed; explicitly set `olcPPolicyCheckModule: /usr/lib/ldap/ppm.so`.
+
 ### <a name="kerberos-authentication"></a>Kerberos authentication (GSSAPI)
 
 The image advertises only the `EXTERNAL` and `GSSAPI` SASL mechanisms. It

@@ -850,7 +850,10 @@ function ppm_reconcile() {
     ppolicy_dn=$(awk '/^dn: / && dn == "" { dn = substr($0, 5) } END { print dn }' \
       <<<"$ppolicy_search")
     if [[ -z $ppolicy_dn ]]; then
-      log WARN "ppolicy overlay not found in configuration, skipping password policy migration"
+      # Absence is a supported configuration, not unfinished work. Do not create
+      # an operator-managed overlay; there is no module attribute to migrate.
+      log INFO "No managed ppolicy overlay is configured; no password policy module migration is required."
+      ppm_module_migration_operation=""
     else
       log INFO "Configuring the password policy overlay to use Debian PPM..."
       # Keep pqchecker.so until all policy updates succeed. If a later step fails,
@@ -879,6 +882,13 @@ function ppm_commit_migration() {
 
   ppm_require_configured || return
   [[ $ppm_write_migrated_config_version == true ]] || return 0
+
+  # The marker suppresses future retries, so every module operation must either
+  # be applied or explicitly discharged as a supported no-op before publication.
+  if [[ -n $ppm_module_migration_operation ]]; then
+    log ERROR "Cannot commit configuration migration while password policy module migration remains pending."
+    return 1
+  fi
 
   # The caller invokes this only after all surrounding configuration succeeds;
   # writing earlier would make a partial migration look complete on retry.

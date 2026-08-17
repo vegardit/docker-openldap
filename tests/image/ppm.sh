@@ -116,6 +116,38 @@ LDIF
     echo "A slapcat failure defaulted the managed MDB to writer ownership." >&2
     exit 1
   fi
+
+  # The version marker is the retry boundary. It must not advance while module
+  # work is pending, but an absent overlay is a supported completed no-op.
+  # The first commit is intentionally rejected; keep its expected error quiet.
+  log() { :; }
+  ppm_configured=true
+  ppm_write_migrated_config_version=true
+  ppm_module_migration_operation=add
+  published=false
+  publish_config_version_marker() { published=true; }
+  if ppm_commit_migration /tmp/initialized 2.6; then
+    echo "Configuration migration committed with pending module work." >&2
+    exit 1
+  fi
+  if [[ $published != false ]]; then
+    echo "Configuration version marker was published with pending module work." >&2
+    exit 1
+  fi
+
+  ppm_reconciliation_prepared=true
+  ppm_reconcile_policies=false
+  ldapsearch() { :; }
+  ppm_reconcile
+  if [[ -n $ppm_module_migration_operation ]]; then
+    echo "A missing ppolicy overlay left module migration pending." >&2
+    exit 1
+  fi
+  ppm_commit_migration /tmp/initialized 2.6
+  if [[ $published != true ]]; then
+    echo "A supported missing-overlay migration did not publish its version marker." >&2
+    exit 1
+  fi
 '
 
 # run.sh invokes PPM lifecycle functions through explicit failure guards. Bash
