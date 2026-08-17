@@ -35,6 +35,7 @@ custom_schema_ldif_dir="$test_dir/custom-schema"
 custom_policy_ldif_file="$test_dir/init_org_ppolicy.ldif"
 invalid_schema_path_file="$test_dir/custom-schema-file"
 ldapmodify_failure_wrapper="$test_dir/ldapmodify"
+slapcat_uid_entrypoint="$test_dir/slapcat-uid-entrypoint"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
 docker_ca_file="$tls_dir/ca.crt"
 docker_cert_file="$tls_dir/server.crt"
@@ -45,6 +46,7 @@ docker_custom_schema_ldif_dir="$custom_schema_ldif_dir"
 docker_custom_policy_ldif_file="$custom_policy_ldif_file"
 docker_invalid_schema_path_file="$invalid_schema_path_file"
 docker_ldapmodify_failure_wrapper="$ldapmodify_failure_wrapper"
+docker_slapcat_uid_entrypoint="$slapcat_uid_entrypoint"
 root_dn='uid=admin,DC=example,DC=com'
 root_password='test-only-password'
 guest_dn='uid=guest1,ou=External,ou=Users,DC=example,DC=com'
@@ -82,6 +84,7 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_custom_policy_ldif_file=$(cygpath -w "$docker_custom_policy_ldif_file")
   docker_invalid_schema_path_file=$(cygpath -w "$docker_invalid_schema_path_file")
   docker_ldapmodify_failure_wrapper=$(cygpath -w "$docker_ldapmodify_failure_wrapper")
+  docker_slapcat_uid_entrypoint=$(cygpath -w "$docker_slapcat_uid_entrypoint")
 fi
 
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
@@ -126,11 +129,27 @@ function create_fresh_volumes() {
 }
 
 function start_container() {
-  local fixture_mode=${1:-}
-  case "$fixture_mode" in
-    --bootstrap-ldifs|--schema-path-file|--fail-ppm-reconcile) shift ;;
-    *) fixture_mode= ;;
-  esac
+  local fixture_mode=
+  local record_slapcat_uids=false
+  local -a command_options=()
+  while (($#)); do
+    case "$1" in
+      --bootstrap-ldifs|--schema-path-file|--fail-ppm-reconcile)
+        fixture_mode=$1
+        shift
+        ;;
+      --record-slapcat-uids)
+        record_slapcat_uids=true
+        shift
+        ;;
+      *) break ;;
+    esac
+  done
+  if [[ $record_slapcat_uids == true ]]; then
+    # Keep tini as PID 1 and invoke the copied fixture through sh because Docker
+    # Desktop cannot preserve an executable mode from every Windows filesystem.
+    command_options=(/bin/sh /opt/test-slapcat-uid-entrypoint /bin/bash /opt/run.sh)
+  fi
 
   docker create --name "$container" \
     --env LDAP_BACKUP_TIME= \
@@ -138,7 +157,7 @@ function start_container() {
     "$@" \
     --mount "type=volume,src=$config_volume,dst=/etc/ldap/slapd.d" \
     --mount "type=volume,src=$data_volume,dst=/var/lib/ldap" \
-    "$image_name" >/dev/null
+    "$image_name" "${command_options[@]}" >/dev/null
 
   # act's nested Docker daemon cannot resolve runner-local bind paths. Copying
   # before start exercises the same container paths on every supported runner.
@@ -160,6 +179,9 @@ function start_container() {
       docker cp "$docker_ldapmodify_failure_wrapper" "$container:/usr/local/bin/ldapmodify"
       ;;
   esac
+  if [[ $record_slapcat_uids == true ]]; then
+    docker cp "$docker_slapcat_uid_entrypoint" "$container:/opt/test-slapcat-uid-entrypoint"
+  fi
   docker start "$container" >/dev/null
 }
 
@@ -193,6 +215,22 @@ function wait_until_ready() {
 
   docker logs --since "$started_at" "$target_container" >&2
   return 1
+}
+
+function assert_slapcat_service_uid() {
+  local target_container=$1
+  local openldap_uid
+  local observed_uids
+
+  openldap_uid=$(docker exec "$target_container" id -u openldap)
+  if ! observed_uids=$(docker exec "$target_container" sort -u /run/slapcat-uids); then
+    echo "The slapcat UID probe did not produce a readable record." >&2
+    return 1
+  fi
+  if [[ $observed_uids != "$openldap_uid" ]]; then
+    printf 'slapcat ran with unexpected UID(s): [%s].\n' "$observed_uids" >&2
+    return 1
+  fi
 }
 
 function start_replication_node() {
@@ -418,6 +456,31 @@ fi
 /usr/bin/ldapmodify "$@" <"$input"
 SH
 chmod +x "$ldapmodify_failure_wrapper"
+
+# The probe replaces slapcat only inside selected test containers. It records the
+# effective UID at the executable boundary, then delegates unchanged, so the test
+# detects privileged configuration reads without relying on a hostile LDAP module.
+cat >"$slapcat_uid_entrypoint" <<'SH'
+#!/bin/sh
+set -eu
+
+# OpenLDAP's hard-linked admin binary selects its mode from argv[0]. Keep the
+# slapcat basename when moving it aside or the delegate can behave like slapadd.
+mkdir /run/real-slapcat
+mv /usr/sbin/slapcat /run/real-slapcat/slapcat
+# Fixed calls reach the wrapper as openldap, so the root-created record must be
+# service-writable while still allowing the baseline's root calls to append.
+install -o openldap -g openldap -m 0600 /dev/null /run/slapcat-uids
+cat >/usr/sbin/slapcat <<'WRAPPER'
+#!/bin/sh
+set -eu
+id -u >>/run/slapcat-uids
+exec /run/real-slapcat/slapcat "$@"
+WRAPPER
+chmod 0755 /usr/sbin/slapcat
+exec "$@"
+SH
+chmod +x "$slapcat_uid_entrypoint"
 
 # The second schema uses the attribute from the first. Their deliberately
 # non-padded names prove that the loader uses documented bytewise ordering.

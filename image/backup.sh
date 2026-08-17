@@ -83,12 +83,14 @@ function load_ldap_backup_state() {
   # the authoritative indication that this server hosts a consumer engine. Backups
   # use this conservative server-wide flag because exporting any partial replica is
   # misleading, even when another local database remains writable.
+  # cn=config can load service-controlled modules while slapcat opens it. Match
+  # slapd's identity so a persisted module cannot execute inside the root entrypoint.
   # Avoid grep -q: its early exit can SIGPIPE slapcat, and pipefail would then hide
   # a real match by making the condition fail.
   # Keep inspection failure nonfatal here: run.sh starts slapd from the same
   # persisted configuration before any pending initial backup can be published.
   is_syncrepl_consumer=false
-  if /usr/sbin/slapcat -n 0 -o ldif-wrap=no | grep -F 'olcSyncrepl:' >/dev/null; then
+  if run_as_openldap /usr/sbin/slapcat -n 0 -o ldif-wrap=no | grep -F 'olcSyncrepl:' >/dev/null; then
     is_syncrepl_consumer=true
   fi
 

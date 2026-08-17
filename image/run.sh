@@ -462,7 +462,9 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     log INFO "Replacing NIS (RFC2307) schema with RFC2307bis schema..."
 
     log INFO "Exporting initial slapd config..."
-    initial_sldapd_config=$(/usr/sbin/slapcat -n0)
+    # cn=config can load service-controlled modules while slapcat opens it. Match
+    # slapd's identity so a persisted module cannot execute inside the root entrypoint.
+    initial_sldapd_config=$(run_as_openldap /usr/sbin/slapcat -n0)
 
     log INFO "Delete initial slapd config..."
     find /etc/ldap/slapd.d/ -type f -delete
@@ -618,8 +620,10 @@ ppm_prepare_reconciliation || exit 1
 # turns a missing runtime mount into an unrelated readiness timeout.
 # Avoid grep -q here: its early exit can SIGPIPE slapcat, and pipefail would then
 # hide a real match by making the condition fail.
+# Inspect cn=config as the service user because its module references are also
+# service-controlled and must not cross back into the root entrypoint.
 if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
-    /usr/sbin/slapcat -n 0 -o ldif-wrap=no |
+    run_as_openldap /usr/sbin/slapcat -n 0 -o ldif-wrap=no |
       grep -F 'olcSyncrepl:' |
       grep -F 'tls_cacert=/etc/ldap/certs/ca.crt' >/dev/null; then
   log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
