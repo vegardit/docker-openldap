@@ -205,6 +205,7 @@ function start_replication_node() {
   local ca_file=${7:-}
   local backup_time=${8:-}
   local ppm_config=${9:-}
+  local provider_tls_ssf=${10:-0128}
   local -a replication_options=()
   local -a ppm_options=()
   local -a tls_ca_options=()
@@ -222,10 +223,12 @@ function start_replication_node() {
     # Syncrepl authenticates with its password, but inherits the consumer's
     # server-only certificate as a client certificate. Do not request that
     # unsuitable certificate; the consumer keeps the normal incoming-TLS policy.
-    # A successful provider start covers zero-padded decimal SSF input.
+    # Keep the zero-padded default at this boundary so every ordinary provider
+    # start covers input normalization; lifecycle tests can still select 0
+    # without relying on duplicate Docker environment entries and their order.
     tls_server_options=(
       --env LDAP_TLS_VERIFY_CLIENT=never
-      --env LDAP_TLS_SSF=0128
+      --env LDAP_TLS_SSF="$provider_tls_ssf"
     )
   fi
   # Keep the CA explicit at each call site: one restart intentionally omits it

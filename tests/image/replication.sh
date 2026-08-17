@@ -101,6 +101,116 @@ wait_until_ready "$provider_container"
 # peer-trust material merely to serve LDAPS to the consumer.
 docker exec "$provider_container" test ! -e /etc/ldap/certs/ca.crt
 
+# Query both attributes together: the overall policy and the local transport
+# allowance are one startup invariant, not two independently acceptable states.
+provider_security=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcSecurity olcLocalSSF)
+if [[ $provider_security != *"olcSecurity: ssf=128"* ||
+      $provider_security != *"olcLocalSSF: 128"* ]]; then
+  printf '%s\n' "$provider_security" >&2
+  echo "The provider did not apply the normalized TLS SSF policy atomically." >&2
+  exit 1
+fi
+
+# A valid simple bind must fail only because the unprotected transport has SSF
+# zero. The same credentials over verified LDAPS distinguish policy enforcement
+# from an unrelated authentication or account-policy failure.
+if docker exec "$provider_container" \
+    ldapwhoami -x -H ldap:/// -D "$root_dn" -w "$root_password" >/dev/null 2>&1; then
+  echo "The provider accepted a plaintext bind despite LDAP_TLS_SSF=128." >&2
+  exit 1
+fi
+docker exec --env LDAPTLS_CACERT=/opt/test-ca.crt "$consumer_container" \
+  ldapwhoami -x -H ldaps://provider -D "$root_dn" -w "$root_password" >/dev/null
+
+function restart_replication_provider() {
+  local tls_ssf=${1:-0128}
+
+  docker stop "$provider_container" >/dev/null
+  docker rm "$provider_container" >/dev/null
+  # Recreate rather than restart the container so the entrypoint must reconcile
+  # the requested policy against the persisted cn=config on every invocation.
+  start_replication_node \
+    "$provider_container" provider "$provider_config_volume" "$provider_data_volume" \
+    provider '' '' '' "$provider_ppm_config" "$tls_ssf"
+  wait_until_ready "$provider_container"
+}
+
+# Reproduce a volume created by an older image or changed by an administrator:
+# the overall floor is already active, but no explicit local allowance exists.
+# The entrypoint must repair that persisted state before its readiness bind,
+# because an online reconciliation cannot run until the bind succeeds.
+docker exec -i "$provider_container" \
+  ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<'LDIF'
+dn: cn=config
+changetype: modify
+delete: olcLocalSSF
+LDIF
+
+restart_replication_provider
+provider_security=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcSecurity olcLocalSSF)
+if [[ $provider_security != *"olcSecurity: ssf=128"* ||
+      $provider_security != *"olcLocalSSF: 128"* ]]; then
+  printf '%s\n' "$provider_security" >&2
+  echo "The provider did not repair its local SSF before restarting." >&2
+  exit 1
+fi
+
+# Administrator-owned factors must survive both removal and restoration of the
+# image-owned overall ssf factor. Keep both update floors above the image's local
+# floor, with update_transport higher, so the restart proves that the entrypoint
+# accounts for each independent requirement before making its own LDAP writes.
+docker exec -i "$provider_container" \
+  ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<'LDIF'
+dn: cn=config
+changetype: modify
+add: olcSecurity
+olcSecurity: update_ssf=192
+olcSecurity: update_transport=193
+LDIF
+
+restart_replication_provider 0
+provider_security=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcSecurity olcLocalSSF)
+if [[ ${provider_security,,} == *"olcsecurity: ssf="* ||
+      $provider_security != *"olcSecurity: update_ssf=192"* ||
+      $provider_security != *"olcSecurity: update_transport=193"* ||
+      $provider_security != *"olcLocalSSF: 193"* ]]; then
+  printf '%s\n' "$provider_security" >&2
+  echo "LDAP_TLS_SSF=0 did not remove only the image-owned overall factor." >&2
+  exit 1
+fi
+# The surviving requirements constrain updates only. A successful plaintext bind
+# therefore still proves that removing the image-owned overall floor took effect.
+docker exec "$provider_container" \
+  ldapwhoami -x -H ldap:/// -D "$root_dn" -w "$root_password" >/dev/null
+docker exec "$provider_container" \
+  ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null
+
+restart_replication_provider
+provider_security=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcSecurity olcLocalSSF)
+if [[ $provider_security != *"olcSecurity: ssf=128"* ||
+      $provider_security != *"olcSecurity: update_ssf=192"* ||
+      $provider_security != *"olcSecurity: update_transport=193"* ||
+      $provider_security != *"olcLocalSSF: 193"* ]]; then
+  printf '%s\n' "$provider_security" >&2
+  echo "The provider did not restore SSF 128 while preserving unrelated factors." >&2
+  exit 1
+fi
+if docker exec "$provider_container" \
+    ldapwhoami -x -H ldap:/// -D "$root_dn" -w "$root_password" >/dev/null 2>&1; then
+  echo "The restarted provider accepted a plaintext bind with LDAP_TLS_SSF=128." >&2
+  exit 1
+fi
+docker exec "$provider_container" \
+  ldapwhoami -Q -Y EXTERNAL -H ldapi:/// >/dev/null
+
 provider_indexes=$(docker exec "$provider_container" \
   ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
     -b 'olcDatabase={1}mdb,cn=config' -s base olcDbIndex)
@@ -389,4 +499,31 @@ LDIF
 # A new provider write proves syncrepl resumed; the pre-restart entry alone
 # could have been stale data that merely survived in the consumer volume.
 wait_for_replica_entry 'cn=replication-after-restart,DC=example,DC=com'
+
+# Exercise the general transport floor only after all remote replication checks.
+# It measures the underlying socket rather than TLS layered over TCP, so enabling
+# it earlier would deliberately disconnect syncrepl and obscure this local-startup
+# invariant with retry timing. Keeping it above both update floors makes the final
+# readiness search prove that the stopped-server preflight raises local SSF first.
+docker exec -i "$provider_container" \
+  ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<'LDIF'
+dn: cn=config
+changetype: modify
+add: olcSecurity
+olcSecurity: transport=194
+LDIF
+
+restart_replication_provider
+provider_security=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcSecurity olcLocalSSF)
+if [[ $provider_security != *"olcSecurity: ssf=128"* ||
+      $provider_security != *"olcSecurity: update_ssf=192"* ||
+      $provider_security != *"olcSecurity: update_transport=193"* ||
+      $provider_security != *"olcSecurity: transport=194"* ||
+      $provider_security != *"olcLocalSSF: 194"* ]]; then
+  printf '%s\n' "$provider_security" >&2
+  echo "The provider did not satisfy and preserve its transport SSF floors." >&2
+  exit 1
+fi
 }

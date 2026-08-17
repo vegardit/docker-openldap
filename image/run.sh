@@ -71,58 +71,24 @@ chown -R openldap:openldap /var/lib/ldap_orig || true
 mkdir -p /run/slapd
 chown -R openldap:openldap /run/slapd
 
-# Keep backup implementation separate while run.sh owns lifecycle ordering around
-# initialization, migrations, TLS reconciliation, and the final service start.
+
+#################################################################
+# Load entrypoint modules
+#################################################################
+# Keep domain implementations definition-only while run.sh owns lifecycle ordering
+# around initialization, migrations, reconciliation, and the final service start.
+# backup.sh provides run_as_openldap, which PPM and offline SSF reconciliation use.
 # shellcheck disable=SC1091  # Not following: /opt/backup.sh is copied into the image
 source /opt/backup.sh
+# shellcheck disable=SC1091  # Not following: /opt/ppm.sh is copied into the image
+source /opt/ppm.sh
+# shellcheck disable=SC1091  # Not following: /opt/tls.sh is copied into the image
+source /opt/tls.sh
 
-#################################################################
-# Install TLS certificates if needed (must be before any slapd starts)
-#################################################################
-case "${LDAP_TLS_ENABLED:-}" in
-  true|false) ;;
-  auto) [[ -f $LDAP_TLS_CERT_FILE && -f $LDAP_TLS_KEY_FILE ]] && LDAP_TLS_ENABLED=true || LDAP_TLS_ENABLED=false ;;
-  *) log ERROR "LDAP_TLS_ENABLED must be auto|true|false"; exit 1 ;;
-esac
 
-if [[ $LDAP_TLS_ENABLED == true ]]; then
-  # Bash treats leading-zero arithmetic as octal and does not detect overflow.
-  # Accept zero padding, but capture at most three digits after it so conversion
-  # is bounded; normalize once so every later use has canonical decimal syntax.
-  if ! [[ $LDAP_TLS_SSF =~ ^0*([0-9]{1,3})$ ]] ||
-      (( 10#${BASH_REMATCH[1]} > 256 )); then
-    log ERROR "LDAP_TLS_SSF must be an integer between 0 and 256 (got '$LDAP_TLS_SSF')"
-    exit 1
-  fi
-  LDAP_TLS_SSF=$((10#${BASH_REMATCH[1]}))
-
-  case "${LDAP_LDAPS_ENABLED:-}" in
-    true|false) log INFO "LDAPS enabled (port 636): $LDAP_LDAPS_ENABLED";;
-    *) log ERROR "LDAP_LDAPS_ENABLED must be true|false"; exit 1 ;;
-  esac
-
-  case "${LDAP_TLS_VERIFY_CLIENT:-}" in
-    never|allow|try|demand) log INFO "TLS_VERIFY_CLIENT: $LDAP_TLS_VERIFY_CLIENT";;
-    *) log ERROR "LDAP_TLS_VERIFY_CLIENT must be never|allow|try|demand"; exit 1 ;;
-  esac
-
-  if [[ ! -f ${LDAP_TLS_KEY_FILE:-} ]]; then
-    log ERROR "TLS requested but LDAP_TLS_KEY_FILE [${LDAP_TLS_KEY_FILE:-}] not accessible"
-    exit 1
-  fi
-  if [[ ! -f ${LDAP_TLS_CERT_FILE:-} ]]; then
-    log ERROR "TLS requested but LDAP_TLS_CERT_FILE [${LDAP_TLS_CERT_FILE:-}] not accessible"
-    exit 1
-  fi
-
-  log INFO "Installing TLS certificates..."
-  install -d -o openldap -g openldap -m 0755 /etc/ldap/certs
-  install -o openldap -g openldap -m 0600 "$LDAP_TLS_KEY_FILE" /etc/ldap/certs/server.key
-  install -o openldap -g openldap -m 0644 "$LDAP_TLS_CERT_FILE" /etc/ldap/certs/server.crt
-  if [[ -f ${LDAP_TLS_CA_FILE:-} ]]; then
-    install -o openldap -g openldap -m 0644 "$LDAP_TLS_CA_FILE" /etc/ldap/certs/ca.crt
-  fi
-fi
+# This phase mutates normalized TLS variables and the final listener selection,
+# so it must remain before initialization and before the first temporary slapd.
+tls_prepare || exit 1
 
 
 #################################################################
@@ -260,8 +226,6 @@ function prestart_slapd() {
 
 initialized_file=/etc/ldap/slapd.d/initialized
 config_version="2.6"
-# shellcheck disable=SC1091  # Image-owned module copied to this fixed path.
-source /opt/ppm.sh
 ppm_configure || exit 1
 
 if [ ! -e "$initialized_file" ]; then
@@ -497,6 +461,10 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     chown openldap:openldap -R /etc/ldap/slapd.d
   fi
 
+  # A seeded or operator-provided configuration can already require more SSF than
+  # ldapi's implicit allowance. Repair it while stopped; otherwise even the
+  # readiness query needed to reach online initialization can be rejected.
+  tls_reconcile_security || exit 1
   prestart_slapd start
 
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
@@ -631,88 +599,25 @@ if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
   exit 1
 fi
 
-#################################################################
-# TLS configuration
-#################################################################
-SLAPD_EXTRA_URLS=""
+# Initial LDIFs or a persisted administrator policy may have changed update_ssf
+# since the earlier preflight. Re-run the idempotent stopped-server reconciliation
+# so every subsequent online write has the local strength it requires.
+tls_reconcile_security || exit 1
 
-if [[ $LDAP_TLS_ENABLED == true ]]; then
-  log BOX "Enabling TLS support..."
-
-  # configure TLS key material
-  cat >/tmp/tls.ldif <<EOF
-dn: cn=config
-changetype: modify
-replace: olcTLSCertificateFile
-olcTLSCertificateFile: /etc/ldap/certs/server.crt
--
-replace: olcTLSCertificateKeyFile
-olcTLSCertificateKeyFile: /etc/ldap/certs/server.key
-EOF
-  if [[ -f /etc/ldap/certs/ca.crt ]]; then
-    cat >>/tmp/tls.ldif <<EOF
--
-replace: olcTLSCACertificateFile
-olcTLSCACertificateFile: /etc/ldap/certs/ca.crt
-EOF
-  fi
-
-  # client-cert policy
-  cat >>/tmp/tls.ldif <<EOF
--
-replace: olcTLSVerifyClient
-olcTLSVerifyClient: ${LDAP_TLS_VERIFY_CLIENT:-try}
-EOF
-
-  # Minimum Security Strength Factor enforcement
-  if [[ $LDAP_TLS_SSF == 0 ]]; then
-    cat >>/tmp/tls.ldif <<EOF
--
-replace: olcSecurity
-olcSecurity: ssf=$LDAP_TLS_SSF
-EOF
-  fi
-
-  # ldaps:// listener
-  if [[ $LDAP_LDAPS_ENABLED == true ]]; then
-    SLAPD_EXTRA_URLS=" ldaps:///"
-  fi
-
-else
-  log BOX "Ensuring TLS support is disabled..."
-  cat >/tmp/tls.ldif <<EOF
-dn: cn=config
-changetype: modify
-delete: olcTLSCertificateFile
--
-delete: olcTLSCertificateKeyFile
--
-delete: olcTLSCACertificateFile
--
-delete: olcTLSVerifyClient
--
-delete: olcSecurity
-EOF
-
-fi
-
-# PPM and TLS reconciliation both require the local-only pre-start server. Keep
-# them in one daemon lifetime so migration does not briefly expose public LDAP.
+# PPM and TLS attribute reconciliation both require the local-only pre-start
+# server. Keep them in one daemon lifetime so migration never opens public LDAP.
 prestart_slapd start
 ppm_reconcile || exit 1
-if [[ ${LDAP_TLS_ENABLED} == true ]]; then
-  ldif modify -Y EXTERNAL /tmp/tls.ldif
-else
-  ldif modify -c -Y EXTERNAL /tmp/tls.ldif || true  # ignore "ldap_modify: No such attribute (16)"
-fi
+
+# tls_reconcile deliberately does not own slapd lifecycle; keeping this call here
+# makes its ldapi-only precondition and its order after PPM visible to reviewers.
+tls_reconcile || exit 1
 
 ppm_commit_migration "$initialized_file" "$config_version" || exit 1
 
 # The first export waits until initialization and TLS reconciliation are complete
 # so it describes the same PPM and TLS state that the final server will use.
 create_initial_ldap_backup
-
-rm -f /tmp/tls.ldif
 
 prestart_slapd stop
 

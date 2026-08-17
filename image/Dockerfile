@@ -163,6 +163,7 @@ EOF
 COPY image/ldifs /opt/ldifs
 COPY image/backup.sh /opt/backup.sh
 COPY image/ppm.sh /opt/ppm.sh
+COPY image/tls.sh /opt/tls.sh
 COPY image/run.sh /opt/run.sh
 COPY .shared/lib/bash-init.sh /opt/bash-init.sh
 

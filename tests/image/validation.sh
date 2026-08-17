@@ -95,6 +95,45 @@ if [[ $invalid_tls_ssf_logs != *"LDAP_TLS_SSF must be an integer between 0 and 2
   exit 1
 fi
 
+test_step "Checking TLS module failure propagation"
+
+# The `||` is deliberate: Bash suppresses inherited errexit throughout a function
+# used as a conditional command. The module must therefore return the failed
+# install explicitly instead of appearing successful after a later false `if`.
+if docker run --rm --entrypoint bash "$image_name" -c '
+    function log() { :; }
+    function install() { return 23; }
+    source /opt/tls.sh
+    LDAP_TLS_ENABLED=true
+    LDAP_TLS_SSF=128
+    LDAP_LDAPS_ENABLED=false
+    LDAP_TLS_VERIFY_CLIENT=never
+    LDAP_TLS_KEY_FILE=/etc/hosts
+    LDAP_TLS_CERT_FILE=/etc/hosts
+    LDAP_TLS_CA_FILE=/does-not-exist
+    tls_prepare || exit $?
+  '; then
+  echo "tls_prepare masked a failed certificate installation." >&2
+  exit 1
+fi
+
+# Cleanup follows the LDAP write in tls_reconcile. Invoke the function from the
+# same errexit-suppressing context to prove a successful cleanup cannot replace
+# the failed LDAP status returned to a future guarded caller.
+if docker run --rm --entrypoint bash "$image_name" -c '
+    function log() { :; }
+    function ldapsearch() { printf "%s\n" "dn: cn=config"; }
+    function ldif() { return 42; }
+    source /opt/tls.sh
+    LDAP_TLS_ENABLED=true
+    LDAP_TLS_SSF=128
+    LDAP_TLS_VERIFY_CLIENT=never
+    tls_reconcile || exit $?
+  '; then
+  echo "tls_reconcile masked a failed LDAP modification." >&2
+  exit 1
+fi
+
 # An explicit empty value is different from an omitted variable. Reject it so
 # an empty Compose or env-file substitution cannot silently retain anonymous access.
 start_container --env LDAP_INIT_ALLOW_ANONYMOUS_ROOT_DSE=
