@@ -6,8 +6,10 @@
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
 # run.sh sources this file. It only defines functions; run.sh decides when to call
-# them and starts or stops the temporary slapd process. The caller provides `log`
-# and `run_as_openldap` from the entrypoint's shared lifecycle environment.
+# them and starts or stops the temporary slapd process. The caller provides `log`,
+# `run_as_openldap`, and `publish_config_version_marker` from the entrypoint's
+# shared lifecycle environment; shell functions resolve those dependencies when
+# invoked, after run.sh has finished defining its lifecycle helpers.
 #
 # Intended order:
 #   ppm_configure
@@ -593,6 +595,10 @@ function ppm_configure() {
 function ppm_detect_migration() {
   local initialized_file=$1
   local config_version=$2
+  # Real markers are short tokens. Leave ample room for future labels while
+  # bounding service-controlled input, and keep byte/printable rules locale-stable.
+  local -r version_marker_max_bytes=128
+  local LC_ALL=C
   local last_version
   local check_module
 
@@ -605,8 +611,22 @@ function ppm_detect_migration() {
   # Fresh initialization writes the current marker after all bootstrap LDIFs
   # succeed. Only existing volumes need migration checks.
   [[ -e $initialized_file ]] || return 0
-  if ! last_version=$(<"$initialized_file"); then
+  # The parent directory is service-owned. Open the marker as openldap so a link
+  # can never expose a root-only file, and bound the captured value before it can
+  # consume entrypoint memory or reach logs. The extra byte distinguishes values
+  # at the limit from oversized input without rejecting safe future-version tokens.
+  if ! last_version=$(run_as_openldap \
+      head -c "$((version_marker_max_bytes + 1))" -- "$initialized_file"); then
     log ERROR "Cannot read configuration version marker [$initialized_file]."
+    return 1
+  fi
+  # Command substitution removes the marker's normal final newline. Any remaining
+  # newline or non-printing byte is unsafe for one-line diagnostics, so reject the
+  # value without echoing it. In the C locale, the anchored + pattern also rejects
+  # empty values, so separate empty/newline predicates would duplicate this check.
+  if [[ ${#last_version} -gt $version_marker_max_bytes ||
+        ! $last_version =~ ^[[:print:]]+$ ]]; then
+    log ERROR "Configuration version marker [$initialized_file] is not a bounded printable value."
     return 1
   fi
   [[ $last_version == 1 ]] && last_version=2.5
@@ -862,10 +882,7 @@ function ppm_commit_migration() {
 
   # The caller invokes this only after all surrounding configuration succeeds;
   # writing earlier would make a partial migration look complete on retry.
-  if ! printf '%s\n' "$config_version" >"$initialized_file"; then
-    log ERROR "Cannot update configuration version marker [$initialized_file]."
-    return 1
-  fi
+  publish_config_version_marker "$initialized_file" "$config_version" || return
   ppm_write_migrated_config_version=false
   log INFO "Configuration migration completed"
 }

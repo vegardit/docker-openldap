@@ -230,6 +230,10 @@ fi
 if unknown_version_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
     source /opt/bash-init.sh
     source /opt/ppm.sh
+    # This function-level fixture runs as root and has no entrypoint lifecycle.
+    # Keep the caller-provided boundary explicit; tests/image/version-marker.sh
+    # proves that the real entrypoint drops to the service account.
+    run_as_openldap() { "$@"; }
     ppm_read_check_module() { printf "%s\n" /usr/lib/ldap/pqchecker.so; }
     marker=$(mktemp)
     printf "%s\n" future-version >"$marker"
@@ -242,6 +246,46 @@ fi
 if [[ $unknown_version_output != *'Unknown configuration version [future-version] still references the retired pqChecker module'* ]]; then
   printf '%s\n' "$unknown_version_output" >&2
   echo "The retired pqChecker path failed for an unrelated reason." >&2
+  exit 1
+fi
+
+# Keep malformed marker text out of diagnostics without narrowing legitimate
+# unknown tokens. Exercise the inclusive boundary separately so an accidental
+# greater-than-or-equal comparison cannot hide behind the oversized failure below.
+if ! maximum_marker_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
+    source /opt/bash-init.sh
+    source /opt/ppm.sh
+    run_as_openldap() { "$@"; }
+    ppm_read_check_module() { printf "%s\n" /usr/lib/ldap/ppm.so; }
+    marker=$(mktemp)
+    printf "%0128d" 0 >"$marker"
+    ppm_configure
+    ppm_detect_migration "$marker" 2.6
+  ' 2>&1); then
+  printf '%s\n' "$maximum_marker_output" >&2
+  echo "A maximum-sized configuration version marker was rejected." >&2
+  exit 1
+fi
+
+# Reading one byte beyond the entrypoint bound must reject the value before module
+# inspection or version-specific migration logic can use it.
+if oversized_marker_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
+    source /opt/bash-init.sh
+    source /opt/ppm.sh
+    run_as_openldap() { "$@"; }
+    ppm_read_check_module() { printf "%s\n" /usr/lib/ldap/ppm.so; }
+    marker=$(mktemp)
+    printf "%0129d" 0 >"$marker"
+    ppm_configure
+    ppm_detect_migration "$marker" 2.6
+  ' 2>&1); then
+  printf '%s\n' "$oversized_marker_output" >&2
+  echo "An oversized configuration version marker reached migration logic." >&2
+  exit 1
+fi
+if [[ $oversized_marker_output != *'is not a bounded printable value'* ]]; then
+  printf '%s\n' "$oversized_marker_output" >&2
+  echo "The oversized configuration version marker failed for an unrelated reason." >&2
   exit 1
 fi
 }

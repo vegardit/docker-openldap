@@ -494,6 +494,10 @@ LDIF
 source "$script_dir/tests/image/ppm.sh"
 test_ppm_functions
 
+# shellcheck source=tests/image/version-marker.sh
+source "$script_dir/tests/image/version-marker.sh"
+test_version_marker_security
+
 # shellcheck source=tests/image/bootstrap-backup.sh
 source "$script_dir/tests/image/bootstrap-backup.sh"
 test_bootstrap_backup_and_ppm
