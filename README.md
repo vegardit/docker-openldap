@@ -366,15 +366,24 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
     |Variable                |Default                       |Description
     |------------------------|------------------------------|-----------
-    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls whether TLS features are activated:<br>- `auto` - activate TLS only if the files referenced by `LDAP_TLS_CERT_FILE` and `LDAP_TLS_KEY_FILE` exist (defaults: `/run/secrets/ldap/server.crt` and `/run/secrets/ldap/server.key`)<br>- `true` - always enable TLS; fail startup if certificate or private key is missing<br>- `false` - disable all TLS features; ignore other TLS settings
+    |`LDAP_TLS_ENABLED`      |`auto`                        |Controls the server's inbound TLS support:<br>- `auto` - activate TLS only if the files referenced by `LDAP_TLS_CERT_FILE` and `LDAP_TLS_KEY_FILE` satisfy the source requirements below (defaults: `/run/secrets/ldap/server.crt` and `/run/secrets/ldap/server.key`)<br>- `true` - always enable TLS; fail startup if the certificate or private key does not satisfy those requirements<br>- `false` - disable STARTTLS and LDAPS listeners and ignore other server TLS settings. Persisted outbound TLS configuration such as syncrepl remains in effect.
     |`LDAP_LDAPS_ENABLED`    |`true`                        |*(Only applies if TLS is enabled)*<br>`true` - enable implicit TLS (LDAPS) listener on port 636 (`ldaps://`)
     |`LDAP_TLS_CERT_FILE`    |`/run/secrets/ldap/server.crt`|Path to the server certificate **inside** the container
     |`LDAP_TLS_KEY_FILE`     |`/run/secrets/ldap/server.key`|Path to the matching private key **inside** the container
-    |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates
+    |`LDAP_TLS_CA_FILE`      |`/run/secrets/ldap/ca.crt`    |Path to the CA bundle for verifying *peer* certificates. The default location is optional and auto-discovered for inbound TLS; setting another path makes that source required when inbound TLS is enabled. A usable source is also staged when inbound TLS is disabled so persisted outbound TLS such as syncrepl can verify its peer.
     |`LDAP_TLS_VERIFY_CLIENT`|`try`                         |Client certificate policy (see [`TLSVerifyClient`](https://www.openldap.org/doc/admin26/guide.html#TLSVerifyClient%20%7B%20never%20%7C%20allow%20%7C%20try%20%7C%20demand%20%7D)):<br>- `never` - don't request a client certificate<br>- `allow` - request a client certificate; ignore if missing or invalid<br>- `try` - request a client certificate; reject if invalid (ignore if missing)<br>- `demand` - require a valid client certificate
     |`LDAP_TLS_SSF`          |`128`                         |*(Only applies if TLS is enabled)* Minimum overall **Security Strength Factor** (SSF) required for LDAP operations. Accepted values are integers from `0` through `256`. A positive value rejects operations whose effective transport and authentication strength is lower, including ordinary clear-text connections. `0` removes only the image-managed overall SSF requirement; other administrator-defined `olcSecurity` factors and ACLs still apply. SSF is not a direct TLS cipher-key-size selector. More details here: [OpenLDAP Admin Guide](https://www.openldap.org/doc/admin26/guide.html#Security%20Strength%20Factors)
 
-    `LDAP_TLS_ENABLED=auto` is reevaluated on every start. Use `true` when missing certificate files must stop the container instead of disabling TLS.
+    The entrypoint accepts two TLS source layouts:
+
+    1. **Service-readable sources:** Files readable by the effective `openldap` UID/GID are validated and opened with that service identity. They may use readable links or reside in service-controlled directories because root never opens their contents.
+
+    2. **Protected root-readable sources:** If `openldap` cannot read a source, the root entrypoint may adapt it when it is a regular file at an absolute, link-free path and neither the file nor any parent directory is owned or writable by `openldap`. These restrictions prevent the service from replacing the configured path before a restart and causing root to publish an unrelated root-only file. The link-free requirement keeps validation and the later root open tied to the same service-immutable path. Root opens only the validated source and passes the open input to `openldap`, which stages and atomically publishes the managed copy. This supports root-owned `0600` mounts without giving the service broader read access. Mapping `LDAP_OPENLDAP_UID=0` intentionally removes this privilege boundary.
+
+    If the entrypoint can safely prove that the default CA path is absent, either with the `openldap` identity or through a parent path that is immutable to `openldap`, TLS can start without a CA. A path that is neither an accepted source nor provably absent is rejected. A custom `LDAP_TLS_CA_FILE` is required and must satisfy the same source requirements.
+    The default CA source is reevaluated on every start. A managed copy left in the same container is not treated as current input: when no current source is staged, stopped reconciliation removes its image-managed `cn=config` reference before slapd starts. Persisted outbound syncrepl is stricter and requires a current CA source on every start because it still names that managed path.
+
+    `LDAP_TLS_ENABLED=auto` is reevaluated on every start. When a configured certificate or key source is neither usable nor safely proven absent, the entrypoint warns before disabling TLS. Use `true` when a missing or otherwise unusable source must stop the container instead.
 
     *How to generate a self-signed cert for testing:*
 
@@ -407,7 +416,7 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
     **Docker Compose example with bind-mount at custom location:**
 
-    Pointing LDAP_TLS_KEY_FILE and LDAP_TLS_CERT_FILE to paths accessible from within the container will automatically enable STARTTLS and LDAPS support.
+    Pointing LDAP_TLS_KEY_FILE and LDAP_TLS_CERT_FILE to files that satisfy the source requirements above will automatically enable STARTTLS and LDAPS support.
 
     ```yaml
     services:
@@ -506,7 +515,7 @@ LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider
 
 Both nodes must mount the same replication-password secret at `/run/secrets/ldap-replication-password`, or set `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to another readable file.
 Use a generated, high-entropy value. The provider deliberately exempts this service account from password lockout so failed authentication attempts cannot lock the account and stop replication.
-Mount each node's server certificate and key at the default TLS paths; `LDAP_TLS_ENABLED=auto` enables TLS when both files are present.
+Mount each node's server certificate and key at the default TLS paths; `LDAP_TLS_ENABLED=auto` enables TLS when both satisfy the TLS source requirements above.
 The consumer must mount the CA certificate on every start so it can verify the provider.
 The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as above.
 

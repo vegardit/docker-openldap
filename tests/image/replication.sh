@@ -47,6 +47,11 @@ openssl x509 -req -sha256 -days 1 \
   -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/ca.key" -CAcreateserial \
   -extfile "$tls_dir/server.ext" -extensions server \
   -out "$tls_dir/server.crt" >/dev/null 2>&1
+# docker cp assigns root ownership and preserves these modes where the host can
+# represent them. The 0600 key then exercises the protected root-readable path;
+# validation.sh provides direct container-side coverage on other hosts.
+chmod 0600 "$tls_dir/server.key"
+chmod 0644 "$tls_dir/server.crt" "$tls_dir/ca.crt"
 
 # Windows-native secret generators commonly terminate text with CRLF. The
 # container must discard that terminator without treating CR as password data.
@@ -123,6 +128,36 @@ if docker exec "$provider_container" \
 fi
 docker exec --env LDAPTLS_CACERT=/opt/test-ca.crt "$consumer_container" \
   ldapwhoami -x -H ldaps://provider -D "$root_dn" -w "$root_password" >/dev/null
+
+# Use the provider's optional default CA path so the same container can first
+# stage a current source and then lose only that source. The managed copy survives
+# the second restart, proving stopped reconciliation uses current-start readiness
+# rather than destination existence when removing the global CA attribute.
+docker exec "$provider_container" mkdir -p /run/secrets/ldap
+docker cp "$docker_ca_file" "$provider_container:/run/secrets/ldap/ca.crt"
+docker restart "$provider_container" >/dev/null
+wait_until_ready "$provider_container"
+provider_ca_config=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcTLSCACertificateFile)
+if [[ $provider_ca_config != *"olcTLSCACertificateFile: /etc/ldap/certs/ca.crt"* ]]; then
+  printf '%s\n' "$provider_ca_config" >&2
+  echo "The provider did not publish its current optional CA source." >&2
+  exit 1
+fi
+
+docker exec "$provider_container" rm /run/secrets/ldap/ca.crt
+docker restart "$provider_container" >/dev/null
+wait_until_ready "$provider_container"
+provider_ca_config=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base olcTLSCACertificateFile)
+if [[ $provider_ca_config == *"olcTLSCACertificateFile:"* ]] ||
+    ! docker exec "$provider_container" test -s /etc/ldap/certs/ca.crt; then
+  printf '%s\n' "$provider_ca_config" >&2
+  echo "A stale optional CA remained active after a same-container restart." >&2
+  exit 1
+fi
 
 function restart_replication_provider() {
   local tls_ssf=${1:-0128}
@@ -499,6 +534,83 @@ LDIF
 # A new provider write proves syncrepl resumed; the pre-restart entry alone
 # could have been stale data that merely survived in the consumer volume.
 wait_for_replica_entry 'cn=replication-after-restart,DC=example,DC=com'
+
+# Recreate the persisted consumer without server certificates. Disabling its
+# inbound TLS must not suppress the current CA source needed by outbound syncrepl.
+docker stop "$consumer_container" >/dev/null
+docker rm "$consumer_container" >/dev/null
+# The tenth helper argument is provider-only; retain its default value solely to
+# select the eleventh-slot TLS mode for this role-less persisted restart.
+start_replication_node \
+  "$consumer_container" consumer "$consumer_config_volume" "$consumer_data_volume" \
+  '' '' "$docker_ca_file" '' '' 0128 false
+wait_until_ready "$consumer_container"
+docker exec "$consumer_container" test ! -e /etc/ldap/certs/server.crt
+docker exec "$consumer_container" test ! -e /etc/ldap/certs/server.key
+consumer_tls_config=$(docker exec "$consumer_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base '(objectClass=*)' \
+    olcTLSCertificateFile olcTLSCertificateKeyFile olcTLSCACertificateFile \
+    olcTLSVerifyClient olcSecurity)
+if [[ $consumer_tls_config == *"olcTLSCertificateFile:"* ||
+      $consumer_tls_config == *"olcTLSCertificateKeyFile:"* ||
+      $consumer_tls_config == *"olcTLSCACertificateFile:"* ||
+      $consumer_tls_config == *"olcTLSVerifyClient:"* ||
+      ${consumer_tls_config,,} == *"olcsecurity: ssf="* ]]; then
+  printf '%s\n' "$consumer_tls_config" >&2
+  echo "Disabling inbound TLS left managed server attributes on the consumer." >&2
+  exit 1
+fi
+docker exec "$consumer_container" \
+  ldapwhoami -x -H ldap://127.0.0.1 -D "$root_dn" -w "$root_password" >/dev/null
+
+docker exec -i "$provider_container" \
+  ldapadd -x -H ldapi:/// -D "$root_dn" -w "$root_password" <<'LDIF'
+dn: cn=replication-with-inbound-tls-disabled,DC=example,DC=com
+objectClass: top
+objectClass: organizationalRole
+cn: replication-with-inbound-tls-disabled
+LDIF
+
+# Query over plaintext because the listener is intentionally disabled; the new
+# provider write, rather than retained data, proves outbound syncrepl still runs.
+wait_for_replica_entry \
+  'cn=replication-with-inbound-tls-disabled,DC=example,DC=com' \
+  'ldap://127.0.0.1'
+
+# Recreate the provider with only its documented persistent volumes. Its old
+# cn=config still names certificate copies from the removed container, so those
+# attributes must be removed before the temporary maintenance daemon starts.
+docker stop "$provider_container" >/dev/null
+docker rm "$provider_container" >/dev/null
+start_replication_node \
+  "$provider_container" provider "$provider_config_volume" "$provider_data_volume" \
+  provider '' '' '' "$provider_ppm_config" 0 false
+wait_until_ready "$provider_container"
+docker exec "$provider_container" test ! -e /etc/ldap/certs/server.crt
+docker exec "$provider_container" test ! -e /etc/ldap/certs/server.key
+provider_tls_config=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+    -b 'cn=config' -s base '(objectClass=*)' \
+    olcTLSCertificateFile olcTLSCertificateKeyFile olcTLSCACertificateFile \
+    olcTLSVerifyClient olcSecurity)
+if [[ $provider_tls_config == *"olcTLSCertificateFile:"* ||
+      $provider_tls_config == *"olcTLSCertificateKeyFile:"* ||
+      $provider_tls_config == *"olcTLSCACertificateFile:"* ||
+      $provider_tls_config == *"olcTLSVerifyClient:"* ||
+      ${provider_tls_config,,} == *"olcsecurity: ssf="* ||
+      $provider_tls_config != *"olcSecurity: update_ssf=192"* ||
+      $provider_tls_config != *"olcSecurity: update_transport=193"* ]]; then
+  printf '%s\n' "$provider_tls_config" >&2
+  echo "Disabling TLS did not remove only the image-managed persisted attributes." >&2
+  exit 1
+fi
+docker exec "$provider_container" \
+  ldapwhoami -x -H ldap:/// -D "$root_dn" -w "$root_password" >/dev/null
+
+# Restore the provider's normal TLS sources for the remaining transport-floor
+# check. This also proves that online enablement still follows offline disablement.
+restart_replication_provider
 
 # Exercise the general transport floor only after all remote replication checks.
 # It measures the underlying socket rather than TLS layered over TCP, so enabling

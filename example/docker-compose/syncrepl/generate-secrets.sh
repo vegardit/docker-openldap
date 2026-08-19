@@ -40,6 +40,10 @@ for node in provider consumer; do
 done
 
 rm tls/provider.csr tls/provider.ext tls/consumer.csr tls/consumer.ext tls/ca.srl
+# POSIX modes keep private material owner-only while public certificates remain
+# service-readable. chmod does not configure Windows ACLs; the example README
+# documents the host-side protection required there.
+chmod 644 tls/*.crt
 chmod 600 tls/*.key "$replication_secret"
 
 echo "Created local TLS material and the replication password."

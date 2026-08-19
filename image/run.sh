@@ -493,7 +493,7 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
   # A seeded or operator-provided configuration can already require more SSF than
   # ldapi's implicit allowance. Repair it while stopped; otherwise even the
   # readiness query needed to reach online initialization can be rejected.
-  tls_reconcile_security || exit 1
+  tls_reconcile_stopped_config || exit 1
   prestart_slapd start
 
   ldif add    -Y EXTERNAL /opt/ldifs/schema_sudo.ldif
@@ -618,31 +618,37 @@ ppm_prepare_reconciliation || exit 1
 # Bootstrap inputs may be omitted after initialization, but the built-in
 # consumer persists this absolute CA path in cn=config. Check it before slapd
 # turns a missing runtime mount into an unrelated readiness timeout.
-# Avoid grep -q here: its early exit can SIGPIPE slapcat, and pipefail would then
-# hide a real match by making the condition fail.
-# Inspect cn=config as the service user because its module references are also
-# service-controlled and must not cross back into the root entrypoint.
-if [[ ! -s /etc/ldap/certs/ca.crt ]] &&
-    run_as_openldap /usr/sbin/slapcat -n 0 -o ldif-wrap=no |
-      grep -F 'olcSyncrepl:' |
-      grep -F 'tls_cacert=/etc/ldap/certs/ca.crt' >/dev/null; then
-  log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
-  exit 1
+# The readiness flag proves this invocation staged a nonempty source; a managed
+# copy left inside a restarted container must not satisfy the persisted consumer.
+if [[ ${TLS_CA_READY_THIS_START:-false} != true ]]; then
+  if tls_stopped_config_requires_current_ca; then
+    log ERROR "Persisted syncrepl requires /etc/ldap/certs/ca.crt; provide LDAP_TLS_CA_FILE on every start"
+    exit 1
+  else
+    persisted_ca_check_status=$?
+    # Status 1 is the expected no-match result. Any higher status means the
+    # service-owned LDIF could not be inspected safely, so startup must fail closed.
+    if (( persisted_ca_check_status > 1 )); then
+      exit 1
+    fi
+  fi
 fi
 
-# Initial LDIFs or a persisted administrator policy may have changed update_ssf
-# since the earlier preflight. Re-run the idempotent stopped-server reconciliation
-# so every subsequent online write has the local strength it requires.
-tls_reconcile_security || exit 1
+# Initial LDIFs or persisted configuration may have changed SSF or TLS attributes
+# since the earlier preflight. Reconcile while stopped because either kind of stale
+# state can prevent the local-only maintenance daemon from becoming reachable.
+tls_reconcile_stopped_config || exit 1
 
-# PPM and TLS attribute reconciliation both require the local-only pre-start
-# server. Keep them in one daemon lifetime so migration never opens public LDAP.
+# PPM and TLS enablement both require the local-only pre-start server. Keep them in
+# one daemon lifetime so migration never opens public LDAP.
 prestart_slapd start
 ppm_reconcile || exit 1
 
-# tls_reconcile deliberately does not own slapd lifecycle; keeping this call here
-# makes its ldapi-only precondition and its order after PPM visible to reviewers.
-tls_reconcile || exit 1
+# Disabled TLS was handled before prestart because stale certificate paths can
+# prevent this daemon from starting. Only enablement retains online validation.
+if [[ $LDAP_TLS_ENABLED == true ]]; then
+  tls_reconcile_enabled || exit 1
+fi
 
 ppm_commit_migration "$initialized_file" "$config_version" || exit 1
 

@@ -244,10 +244,13 @@ function start_replication_node() {
   local backup_time=${8:-}
   local ppm_config=${9:-}
   local provider_tls_ssf=${10:-0128}
+  local tls_mode=${11:-auto}
   local -a replication_options=()
   local -a ppm_options=()
   local -a tls_ca_options=()
+  local -a tls_mode_options=()
   local -a tls_server_options=()
+  local -a tls_source_options=()
   if [[ -n $role ]]; then
     replication_options=(
       --env LDAP_INIT_REPLICATION_ROLE="$role"
@@ -277,11 +280,20 @@ function start_replication_node() {
   if [[ -n $ppm_config ]]; then
     ppm_options=(--env LDAP_PPOLICY_PPM_CONFIG="$ppm_config")
   fi
+  if [[ $tls_mode == false ]]; then
+    tls_mode_options=(--env LDAP_TLS_ENABLED=false)
+  else
+    tls_source_options=(
+      --env LDAP_TLS_CERT_FILE=/opt/test-server.crt
+      --env LDAP_TLS_KEY_FILE=/opt/test-server.key
+    )
+  fi
 
   # Resource names stay unique for parallel tests, while the isolated network
   # aliases remain stable so certificate hostname verification can stay strict.
-  # Intentionally omit LDAP_TLS_ENABLED so the fixture covers the image's
-  # certificate-and-key auto-detection instead of forcing TLS on.
+  # Ordinary nodes omit LDAP_TLS_ENABLED so the fixture covers certificate-and-key
+  # auto-detection. The disablement lifecycle explicitly sets false and omits the
+  # sources to reproduce a container recreated with only its documented volumes.
   docker create --name "$node" --hostname "$network_alias" \
     --network "$replication_network" --network-alias "$network_alias" \
     --network-alias "${network_alias}-cn-only" \
@@ -291,9 +303,9 @@ function start_replication_node() {
     "${replication_options[@]}" \
     "${ppm_options[@]}" \
     "${tls_ca_options[@]}" \
-    --env LDAP_TLS_CERT_FILE=/opt/test-server.crt \
-    --env LDAP_TLS_KEY_FILE=/opt/test-server.key \
+    "${tls_mode_options[@]}" \
     "${tls_server_options[@]}" \
+    "${tls_source_options[@]}" \
     --mount "type=volume,src=$node_config_volume,dst=/etc/ldap/slapd.d" \
     --mount "type=volume,src=$node_data_volume,dst=/var/lib/ldap" \
     "$image_name" >/dev/null
@@ -303,8 +315,10 @@ function start_replication_node() {
   if [[ -n $ca_file ]]; then
     docker cp "$ca_file" "$node:/opt/test-ca.crt"
   fi
-  docker cp "$docker_cert_file" "$node:/opt/test-server.crt"
-  docker cp "$docker_key_file" "$node:/opt/test-server.key"
+  if [[ $tls_mode != false ]]; then
+    docker cp "$docker_cert_file" "$node:/opt/test-server.crt"
+    docker cp "$docker_key_file" "$node:/opt/test-server.key"
+  fi
   if [[ -n $role ]]; then
     # Copy the directory because /run/secrets does not exist in a merely created
     # container. The image must discover the conventional secret path itself.
@@ -323,15 +337,26 @@ function start_replication_node() {
 
 function wait_for_replica_entry() {
   local entry_dn=$1
+  local ldap_uri=${2:-ldaps://consumer}
+  local -a tls_options=()
+
+  # Most checks exercise the normal LDAPS listener. The inbound-disable lifecycle
+  # deliberately has no TLS listener, so keep the transport selectable without
+  # weakening certificate verification for the default path.
+  if [[ $ldap_uri == ldaps://* ]]; then
+    tls_options=(
+      --env LDAPTLS_CACERT=/etc/ldap/certs/ca.crt
+      --env LDAPTLS_REQCERT=demand
+    )
+  fi
 
   for _ in {1..120}; do
     # A successful base-scope lookup is the protocol-level existence check; DN
     # text is unsuitable because servers may normalize attribute type casing.
     if docker exec \
-        --env LDAPTLS_CACERT=/etc/ldap/certs/ca.crt \
-        --env LDAPTLS_REQCERT=demand \
+        "${tls_options[@]}" \
         "$consumer_container" \
-        ldapsearch -LLL -x -H ldaps://consumer \
+        ldapsearch -LLL -x -H "$ldap_uri" \
           -D "$root_dn" -w "$root_password" \
           -b "$entry_dn" -s base '(objectClass=*)' 1.1 >/dev/null 2>&1; then
       return 0
