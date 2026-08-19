@@ -261,6 +261,7 @@ fi
 # failure into a startup error.
 if unknown_version_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
     source /opt/bash-init.sh
+    source /opt/config-migration.sh
     source /opt/ppm.sh
     # This function-level fixture runs as root and has no entrypoint lifecycle.
     # Keep the caller-provided boundary explicit; tests/image/version-marker.sh
@@ -286,6 +287,7 @@ fi
 # greater-than-or-equal comparison cannot hide behind the oversized failure below.
 if ! maximum_marker_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
     source /opt/bash-init.sh
+    source /opt/config-migration.sh
     source /opt/ppm.sh
     run_as_openldap() { "$@"; }
     ppm_read_check_module() { printf "%s\n" /usr/lib/ldap/ppm.so; }
@@ -303,6 +305,7 @@ fi
 # inspection or version-specific migration logic can use it.
 if oversized_marker_output=$(docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
     source /opt/bash-init.sh
+    source /opt/config-migration.sh
     source /opt/ppm.sh
     run_as_openldap() { "$@"; }
     ppm_read_check_module() { printf "%s\n" /usr/lib/ldap/ppm.so; }

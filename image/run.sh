@@ -80,6 +80,8 @@ chown -R openldap:openldap /run/slapd
 # backup.sh provides run_as_openldap, which PPM and offline SSF reconciliation use.
 # shellcheck disable=SC1091  # Not following: /opt/backup.sh is copied into the image
 source /opt/backup.sh
+# shellcheck disable=SC1091  # Not following: /opt/config-migration.sh is copied into the image
+source /opt/config-migration.sh
 # shellcheck disable=SC1091  # Not following: /opt/ppm.sh is copied into the image
 source /opt/ppm.sh
 # shellcheck disable=SC1091  # Not following: /opt/tls.sh is copied into the image
@@ -222,33 +224,6 @@ function prestart_slapd() {
       return 2
       ;;
   esac
-}
-
-function publish_config_version_marker() {
-  local marker_file=$1
-  local version=$2
-  local temporary_file
-
-  # The marker's parent belongs to openldap, so it cannot provide root-owned
-  # integrity. Keep every filesystem open under the service identity instead of
-  # letting a service-selected link cross back into the root entrypoint.
-  if ! temporary_file=$(run_as_openldap mktemp -- "${marker_file}.tmp.XXXXXX"); then
-    log ERROR "Cannot create a temporary configuration version marker beside [$marker_file]."
-    return 1
-  fi
-
-  # A sibling temporary file guarantees a same-filesystem atomic rename. -T
-  # replaces a destination symlink itself instead of following it.
-  if printf '%s\n' "$version" | run_as_openldap tee -- "$temporary_file" >/dev/null &&
-      run_as_openldap mv -fT -- "$temporary_file" "$marker_file"; then
-    return 0
-  fi
-
-  log ERROR "Cannot publish configuration version marker [$marker_file]."
-  if ! run_as_openldap rm -f -- "$temporary_file"; then
-    log WARN "Cannot remove incomplete configuration version marker [$temporary_file]."
-  fi
-  return 1
 }
 
 initialized_file=/etc/ldap/slapd.d/initialized
@@ -601,6 +576,7 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
 
 else
   # System is already initialized - check for migrations
+  migrate_legacy_ppolicy_schema "$initialized_file" || exit 1
   ppm_detect_migration "$initialized_file" "$config_version" || exit 1
 fi
 
@@ -651,6 +627,7 @@ if [[ $LDAP_TLS_ENABLED == true ]]; then
 fi
 
 ppm_commit_migration "$initialized_file" "$config_version" || exit 1
+finalize_legacy_ppolicy_schema_migration "$initialized_file" "$config_version" || exit 1
 
 # The first export waits until initialization and TLS reconciliation are complete
 # so it describes the same PPM and TLS state that the final server will use.

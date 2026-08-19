@@ -582,6 +582,11 @@ LDIF
 source "$script_dir/tests/image/ppm.sh"
 test_ppm_functions
 
+# shellcheck source=tests/image/config-migration.sh
+source "$script_dir/tests/image/config-migration.sh"
+test_config_migration_functions
+test_legacy_ppolicy_schema_migration_from_openldap_24
+
 # shellcheck source=tests/image/version-marker.sh
 source "$script_dir/tests/image/version-marker.sh"
 test_version_marker_security

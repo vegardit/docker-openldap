@@ -280,6 +280,11 @@ Other password-policy rules remain active.
 
 #### Existing pqChecker configurations
 
+When upgrading persisted volumes directly from `vegardit/openldap:2.4.x`, the image first removes the external `ppolicy` schema required by OpenLDAP 2.4.
+OpenLDAP 2.5 and later provide that schema from the `ppolicy` module and reject the old copy as a duplicate.
+The entrypoint rebuilds and validates `cn=config` while slapd is stopped, preserves the original configuration until the full 2.6 migration commits, and then removes the migration journal.
+Back up both `/etc/ldap/slapd.d` and `/var/lib/ldap` before a version upgrade.
+
 When stored configuration still references `/usr/lib/ldap/pqchecker.so`, startup does the following:
 
 - Replace `olcPPolicyCheckModule` with `/usr/lib/ldap/ppm.so`.
