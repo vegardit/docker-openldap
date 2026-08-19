@@ -197,6 +197,44 @@ if [[ -n $plain_ppm_changes ]]; then
   exit 1
 fi
 
+# OpenLDAP 2.6 ignores the policy-level pqChecker path and logs a warning each
+# time it reads the policy. Remove only the value created by the 2.4 image; a
+# different value is operator-owned even though the attribute is now obsolete.
+docker run --rm --entrypoint bash "$image_name" -euo pipefail -c '
+  source /opt/ppm.sh
+  ppm_arg="minQuality 3"
+  ppm_arg_base64=$(printf "%s" "$ppm_arg" | base64 -w 0)
+
+  legacy_changes=$(ppm_prepare_policy_changes "$ppm_arg_base64" "$ppm_arg" true <<LDIF
+dn: cn=LegacyPolicy,dc=example,dc=com
+objectClass: pwdPolicyChecker
+pwdUseCheckModule: TRUE
+pwdCheckModule: /usr/lib/ldap/pqchecker.so
+pwdCheckModuleArg: $ppm_arg
+LDIF
+  )
+  if ! grep -Fx "delete: pwdCheckModule" <<<"$legacy_changes" >/dev/null ||
+      ! grep -Fx "pwdCheckModule: /usr/lib/ldap/pqchecker.so" <<<"$legacy_changes" >/dev/null; then
+    printf "%s\n" "$legacy_changes" >&2
+    echo "The image-owned pqChecker policy attribute was not deleted." >&2
+    exit 1
+  fi
+
+  custom_changes=$(ppm_prepare_policy_changes "$ppm_arg_base64" "$ppm_arg" true <<LDIF
+dn: cn=CustomPolicy,dc=example,dc=com
+objectClass: pwdPolicyChecker
+pwdUseCheckModule: TRUE
+pwdCheckModule: /usr/lib/ldap/custom-checker.so
+pwdCheckModuleArg: $ppm_arg
+LDIF
+  )
+  if [[ -n $custom_changes ]]; then
+    printf "%s\n" "$custom_changes" >&2
+    echo "A custom pwdCheckModule value produced a policy update." >&2
+    exit 1
+  fi
+'
+
 # Empty octet strings have no space after the LDIF delimiter. They are still
 # present values, so normal updates must replace them and migrations that only
 # fill missing attributes must leave them unchanged.

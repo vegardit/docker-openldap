@@ -248,7 +248,8 @@ The ACLs are inserted at the start of `olcAccess` on `olcDatabase={1}mdb`:
 - Container root over `ldapi:///` can write `entry` and `objectClass`.
   Automatic updates need these attributes to find policies.
   The rule uses `write` instead of `read` so existing add, delete, rename, and object-class operations are not reduced to read-only access.
-- The same local identity can write `pwdUseCheckModule` and `pwdCheckModuleArg` on `pwdPolicyChecker` entries.
+- The same local identity can write `pwdCheckModule`, `pwdUseCheckModule`, and `pwdCheckModuleArg` on `pwdPolicyChecker` entries.
+  The obsolete attribute is included only so the image can remove the exact pqChecker path created by its 2.4 releases.
 
 Both ACLs require the root peercred DN and the local `ldapi:///` socket.
 LDAP and LDAPS network clients cannot use them.
@@ -289,10 +290,23 @@ When stored configuration still references `/usr/lib/ldap/pqchecker.so`, startup
 
 - Replace `olcPPolicyCheckModule` with `/usr/lib/ldap/ppm.so`.
   A compatibility symlink lets slapd start long enough to update the stored configuration; the pqChecker binary is no longer included.
+- When automatic updates are enabled, delete `pwdCheckModule: /usr/lib/ldap/pqchecker.so` from migrated policies.
+  OpenLDAP 2.6 ignores this obsolete attribute and otherwise logs a warning whenever it reads the policy. Other values are preserved.
 - With an explicitly empty `LDAP_PPOLICY_PPM_CONFIG`, leave existing policy attributes unchanged.
 - If `LDAP_PPOLICY_PPM_CONFIG` is unset and `LDAP_PPOLICY_PQCHECKER_RULE` is empty, add the old default rule only where PPM policy attributes are missing.
   Existing native PPM values and explicit `pwdUseCheckModule: FALSE` values remain unchanged.
 - Stop startup if an unknown configuration version still references the old path, because its pqChecker arguments cannot safely be used as PPM configuration.
+
+An explicit PPM opt-out also retains the obsolete `pwdCheckModule` value and its OpenLDAP 2.6 warning.
+After configuring the intended 2.6 password checker attributes, remove only the old image value manually if the warning is unwanted:
+Apply this LDIF with `ldapmodify -e relax`; an ordinary Modify request cannot change an `OBSOLETE` attribute.
+
+```ldif
+dn: cn=DefaultPasswordPolicy,ou=Policies,DC=example,DC=com
+changetype: modify
+delete: pwdCheckModule
+pwdCheckModule: /usr/lib/ldap/pqchecker.so
+```
 
 A persisted configuration without a ppolicy overlay is also supported.
 During migration from 2.5, the configured PPM settings can still update existing `pwdPolicyChecker` entries, but version migration does not create an overlay.

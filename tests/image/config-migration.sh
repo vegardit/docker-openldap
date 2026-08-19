@@ -78,6 +78,7 @@ function test_legacy_ppolicy_schema_migration_from_openldap_24() {
   local legacy_root_dn='uid=admin,o=example.com'
   local legacy_root_password='test-only-legacy-password'
   local migration_logs
+  local policy_config
   local schema_config
   local sentinel
 
@@ -164,6 +165,21 @@ LDIF
       [[ $schema_config != *'openssh-lpk,cn=schema,cn=config'* ]]; then
     printf '%s\n' "$schema_config" >&2
     echo "The migrated schema tree is missing retained schemas or still contains external ppolicy." >&2
+    exit 1
+  fi
+
+  policy_config=$(docker exec "$migrated_container" \
+    ldapsearch -LLL -o ldif-wrap=no -x -H ldap://127.0.0.1 \
+      -D "$legacy_root_dn" -w "$legacy_root_password" \
+      -b 'cn=DefaultPasswordPolicy,ou=Policies,o=example.com' -s base \
+      '(objectClass=*)' pwdCheckModule pwdUseCheckModule pwdCheckModuleArg)
+  # The entry state is the invariant; container log streams can interleave the
+  # warning with unrelated startup output and are not a reliable assertion.
+  if [[ $policy_config == *'pwdCheckModule: /usr/lib/ldap/pqchecker.so'* ]] ||
+      [[ $policy_config != *'pwdUseCheckModule: TRUE'* ]] ||
+      [[ $policy_config != *'pwdCheckModuleArg:: '* ]]; then
+    printf '%s\n' "$policy_config" >&2
+    echo "The migrated password policy retained pqChecker state or lacks its PPM replacement." >&2
     exit 1
   fi
 

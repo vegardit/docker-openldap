@@ -62,7 +62,7 @@ provider_ppm_config=$'minQuality 0\nforbiddenChars %'
 consumer_conflicting_ppm_config=$'minQuality 0\nforbiddenChars ^'
 ppm_peercred_dn='gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth'
 ppm_search_acl="to attrs=entry,objectClass by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
-ppm_write_acl="to filter=\"(objectClass=pwdPolicyChecker)\" attrs=pwdUseCheckModule,pwdCheckModuleArg by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
+ppm_write_acl="to filter=\"(objectClass=pwdPolicyChecker)\" attrs=pwdCheckModule,pwdUseCheckModule,pwdCheckModuleArg by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
 ppm_blocking_acl="to * by dn.exact=\"$ppm_peercred_dn\" none by * break"
 ppm_temporary_limits="dn.exact=\"$ppm_peercred_dn\" size.soft=unlimited size.hard=unlimited time.soft=unlimited time.hard=unlimited"
 ppm_temporary_limits_marker='/etc/ldap/slapd.d/.ppm-reconciliation-limit'

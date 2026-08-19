@@ -86,11 +86,20 @@ function ppm_prepare_policy_changes() {
         has_use = 0
         has_arg = 0
         arg_matches = 0
+        remove_legacy_module = 0
         for (i = 1; i <= NF; i++) {
           line = tolower($i)
           if (line ~ /^dn::? /) dn = $i
           if (line == "objectclass: pwdpolicychecker") is_policy = 1
           if (line ~ /^pwdusecheckmodule: /) has_use = 1
+          if (line ~ /^pwdcheckmodule: /) {
+            module_value = substr($i, index($i, ":") + 1)
+            sub(/^ +/, "", module_value)
+            # OpenLDAP 2.6 ignores this obsolete attribute but logs it whenever
+            # the policy is read. Match the original case-sensitive value so a
+            # similar operator-owned path is never mistaken for the image default.
+            if (module_value == "/usr/lib/ldap/pqchecker.so") remove_legacy_module = 1
+          }
           # Empty octet strings are valid LDIF and have no space after the
           # delimiter. This attribute is SINGLE-VALUE, so an existing empty value
           # must use replace; migrations that only fill missing attributes must
@@ -112,7 +121,8 @@ function ppm_prepare_policy_changes() {
 
         change_use = is_policy && !has_use
         change_arg = is_policy && (!has_arg || (replace_existing == "true" && !arg_matches))
-        if (dn == "" || (!change_use && !change_arg)) next
+        remove_legacy_module = is_policy && remove_legacy_module
+        if (dn == "" || (!change_use && !change_arg && !remove_legacy_module)) next
 
         print dn "\nchangetype: modify\n"
         # Check only whether the attribute exists. An explicit FALSE disables PPM
@@ -127,6 +137,10 @@ function ppm_prepare_policy_changes() {
           else print "add: pwdCheckModuleArg\n"
           print "pwdCheckModuleArg:: " ppm_arg_base64 "\n"
         }
+        if (remove_legacy_module) {
+          if (change_use || change_arg) print "-\n"
+          print "delete: pwdCheckModule\npwdCheckModule: /usr/lib/ldap/pqchecker.so\n"
+        }
         print "\n"
       }
     '
@@ -139,8 +153,9 @@ function ppm_ldapmodify_logged() {
   # reconciliation does not duplicate the full client output in a Bash variable.
   # The identical branches are intentional: using the pipeline as an if condition
   # prevents errexit from skipping PIPESTATUS, regardless of the caller's pipefail
-  # setting. Only the LDAP client's status controls success, as before.
-  if ldapmodify -Q -Y EXTERNAL -H ldapi:/// 2>&1 | log INFO; then
+  # setting. Optional arguments let a caller add a narrowly scoped LDAP control;
+  # only the LDAP client's status controls success, as before.
+  if ldapmodify "$@" -Q -Y EXTERNAL -H ldapi:/// 2>&1 | log INFO; then
     status=${PIPESTATUS[0]}
   else
     status=${PIPESTATUS[0]}
@@ -307,6 +322,7 @@ function ppm_reconcile_policy_entries() (
   local mdb_config=$2
   local ppm_limits=$3
   local ppm_limits_marker=$4
+  local -a ppm_ldapmodify_args=()
   local ppm_spool_directory=/var/tmp/docker-openldap-ppm
   local ppm_policy_entries_file="$ppm_spool_directory/policy-entries.ldif"
   local ppm_policy_changes_file="$ppm_spool_directory/policy-changes.ldif"
@@ -354,7 +370,7 @@ function ppm_reconcile_policy_entries() (
   # reports a size, time, or transport failure.
   ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
       -b "$database_suffix" -s sub '(objectClass=pwdPolicyChecker)' \
-      objectClass pwdUseCheckModule pwdCheckModuleArg \
+      objectClass pwdCheckModule pwdUseCheckModule pwdCheckModuleArg \
       >"$ppm_policy_entries_file" || ppm_search_status=$?
 
   if ((ppm_search_status == 3 || ppm_search_status == 4)); then
@@ -393,7 +409,7 @@ EOF
     ppm_search_status=0
     ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
         -b "$database_suffix" -s sub '(objectClass=pwdPolicyChecker)' \
-        objectClass pwdUseCheckModule pwdCheckModuleArg \
+        objectClass pwdCheckModule pwdUseCheckModule pwdCheckModuleArg \
         >"$ppm_policy_entries_file" || ppm_search_status=$?
 
     # The override is needed only while reading policies. Remove it before any
@@ -428,7 +444,13 @@ EOF
 
   if [[ -s $ppm_policy_changes_file ]]; then
     log INFO "Reconciling Debian PPM policy attributes from $ppm_config_source..."
-    if ! ppm_ldapmodify_logged <"$ppm_policy_changes_file"; then
+    if grep -Fxq 'delete: pwdCheckModule' "$ppm_policy_changes_file"; then
+      # slapd enforces OBSOLETE on ordinary Modify requests, including deletes.
+      # Limit Relax Rules to a generated batch that needs this one legacy cleanup;
+      # cn=config and ordinary PPM updates keep their stricter validation.
+      ppm_ldapmodify_args=(-e relax)
+    fi
+    if ! ppm_ldapmodify_logged "${ppm_ldapmodify_args[@]}" <"$ppm_policy_changes_file"; then
       log ERROR "Cannot reconcile Debian PPM policy attributes."
       return 1
     fi
@@ -750,7 +772,7 @@ function ppm_reconcile() {
   # but does not keep them, so matching the returned form prevents duplicate rules
   # on restart.
   ppm_search_acl="to attrs=entry,objectClass by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
-  ppm_write_acl="to filter=\"(objectClass=pwdPolicyChecker)\" attrs=pwdUseCheckModule,pwdCheckModuleArg by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
+  ppm_write_acl="to filter=\"(objectClass=pwdPolicyChecker)\" attrs=pwdCheckModule,pwdUseCheckModule,pwdCheckModuleArg by dn.exact=\"$ppm_peercred_dn\" sockurl.exact=\"ldapi:///\" write by * break"
   ppm_limits="dn.exact=\"$ppm_peercred_dn\" size.soft=unlimited size.hard=unlimited time.soft=unlimited time.hard=unlimited"
   ppm_limits_marker=/etc/ldap/slapd.d/.ppm-reconciliation-limit
 
@@ -769,10 +791,11 @@ function ppm_reconcile() {
     # LDAP discovery needs entry and objectClass access from the suffix down.
     # Because this first matching ACL stops evaluation for local root, use write
     # instead of read so it does not remove existing entry add, delete, rename, or
-    # objectClass operations. Other image-granted writes remain limited to the two
-    # PPM attributes. Keep both rules permanently because reconciliation runs on
-    # every writer start. Existing catch-all rules mean these rules must stay first;
-    # the position check avoids rewriting correctly ordered ACLs on every restart.
+    # objectClass operations. Other image-granted writes remain limited to managed
+    # policy attributes; pwdCheckModule is included only to remove the exact 2.4
+    # image value. Keep both rules permanently because reconciliation runs on every
+    # writer start. Existing catch-all rules mean these rules must stay first; the
+    # position check avoids rewriting correctly ordered ACLs on every restart.
     if ! ppm_config_has_value "$mdb_config" olcAccess "$ppm_search_acl" 0 ||
         ! ppm_config_has_value "$mdb_config" olcAccess "$ppm_write_acl" 1; then
       # Build the prefix back-to-front because each {0} insertion pushes the

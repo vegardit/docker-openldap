@@ -683,6 +683,19 @@ olcLimits: {0}$ppm_temporary_limits
 LDIF
 fi
 
+# Explicit native opt-out owns all persisted policy attributes. Seed the exact
+# legacy image value so this restart catches an over-broad warning cleanup rather
+# than merely proving that unrelated native PPM attributes remain unchanged.
+# Relax Rules is required because slapd otherwise rejects writes to OBSOLETE data.
+docker exec -i "$container" \
+  ldapmodify -e relax -x -H ldap://127.0.0.1 \
+    -D "$root_dn" -w "$root_password" >/dev/null <<'LDIF'
+dn: cn=DefaultPasswordPolicy,ou=Policies,DC=example,DC=com
+changetype: modify
+add: pwdCheckModule
+pwdCheckModule: /usr/lib/ldap/pqchecker.so
+LDIF
+
 # A data-volume writer must not be able to authorize deletion from cn=config.
 # Leave a marker at the retired location so this restart distinguishes storage
 # ownership from marker syntax instead of merely testing for no marker at all.
@@ -736,7 +749,7 @@ default_policy_after_native_opt_out=$(docker exec "$container" \
   ldapsearch -LLL -o ldif-wrap=no -x -H ldap://127.0.0.1 \
     -D "$root_dn" -w "$root_password" \
     -b 'cn=DefaultPasswordPolicy,ou=Policies,DC=example,DC=com' -s base \
-    '(objectClass=*)' pwdUseCheckModule pwdCheckModuleArg)
+    '(objectClass=*)' pwdCheckModule pwdUseCheckModule pwdCheckModuleArg)
 disabled_policy_after_native_opt_out=$(docker exec "$container" \
   ldapsearch -LLL -o ldif-wrap=no -x -H ldap://127.0.0.1 \
     -D "$root_dn" -w "$root_password" \
@@ -748,6 +761,7 @@ default_opt_out_arg=$(printf '%s' "$default_opt_out_arg_base64" | base64 -d)
 disabled_opt_out_arg=$(printf '%s' "$disabled_opt_out_arg_base64" | base64 -d)
 
 if [[ $default_policy_after_native_opt_out != *'pwdUseCheckModule: TRUE'* ||
+      $default_policy_after_native_opt_out != *'pwdCheckModule: /usr/lib/ldap/pqchecker.so'* ||
       $disabled_policy_after_native_opt_out != *'pwdUseCheckModule: FALSE'* ||
       $default_opt_out_arg != "$restart_native_ppm_config" ||
       $disabled_opt_out_arg != "$restart_native_ppm_config" ]]; then
