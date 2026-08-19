@@ -23,6 +23,7 @@ provider_container="$test_id-provider"
 provider_config_volume="$test_id-provider-config"
 provider_data_volume="$test_id-provider-data"
 consumer_container="$test_id-consumer"
+root_password_container="$test_id-root-password"
 consumer_config_volume="$test_id-consumer-config"
 consumer_data_volume="$test_id-consumer-data"
 test_dir=$(mktemp -d)
@@ -36,7 +37,10 @@ custom_policy_ldif_file="$test_dir/init_org_ppolicy.ldif"
 invalid_schema_path_file="$test_dir/custom-schema-file"
 ldapmodify_failure_wrapper="$test_dir/ldapmodify"
 offline_tool_uid_entrypoint="$test_dir/offline-tool-uid-entrypoint"
+root_password_env_probe_file="$script_dir/tests/image/root-password-env-probe.sh"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
+root_password_secret_dir="$test_dir/root-password/secrets"
+root_password_secret_file="$root_password_secret_dir/ldap-admin-password"
 docker_ca_file="$tls_dir/ca.crt"
 docker_cert_file="$tls_dir/server.crt"
 docker_key_file="$tls_dir/server.key"
@@ -47,6 +51,9 @@ docker_custom_policy_ldif_file="$custom_policy_ldif_file"
 docker_invalid_schema_path_file="$invalid_schema_path_file"
 docker_ldapmodify_failure_wrapper="$ldapmodify_failure_wrapper"
 docker_offline_tool_uid_entrypoint="$offline_tool_uid_entrypoint"
+docker_root_password_env_probe_file="$root_password_env_probe_file"
+docker_root_password_secret_dir="$root_password_secret_dir"
+docker_root_password_secret_file="$root_password_secret_file"
 root_dn='uid=admin,DC=example,DC=com'
 root_password='test-only-password'
 guest_dn='uid=guest1,ou=External,ou=Users,DC=example,DC=com'
@@ -85,11 +92,16 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_invalid_schema_path_file=$(cygpath -w "$docker_invalid_schema_path_file")
   docker_ldapmodify_failure_wrapper=$(cygpath -w "$docker_ldapmodify_failure_wrapper")
   docker_offline_tool_uid_entrypoint=$(cygpath -w "$docker_offline_tool_uid_entrypoint")
+  docker_root_password_env_probe_file=$(cygpath -w "$docker_root_password_env_probe_file")
+  docker_root_password_secret_dir=$(cygpath -w "$docker_root_password_secret_dir")
+  docker_root_password_secret_file=$(cygpath -w "$docker_root_password_secret_file")
 fi
 
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
 function cleanup() {
-  docker rm --force "$container" "$provider_container" "$consumer_container" >/dev/null 2>&1 || true
+  docker rm --force --volumes \
+    "$container" "$provider_container" "$consumer_container" "$root_password_container" \
+    >/dev/null 2>&1 || true
   docker volume rm --force \
     "$config_volume" "$data_volume" \
     "$provider_config_volume" "$provider_data_volume" \
@@ -589,6 +601,10 @@ LDIF
 # shellcheck source=tests/image/ppm.sh
 source "$script_dir/tests/image/ppm.sh"
 test_ppm_functions
+
+# shellcheck source=tests/image/root-password.sh
+source "$script_dir/tests/image/root-password.sh"
+test_root_password_file
 
 # shellcheck source=tests/image/config-migration.sh
 source "$script_dir/tests/image/config-migration.sh"

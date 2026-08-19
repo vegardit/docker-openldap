@@ -5,19 +5,36 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 cd "$script_dir"
 
+provider_admin_secret=secrets/ldap-provider-admin-password
+consumer_admin_secret=secrets/ldap-consumer-admin-password
 replication_secret=secrets/ldap-replication-password
 
 # Refuse to overwrite or combine credential material from separate runs. If the
 # initial generation fails, remove its partial output explicitly before retrying.
-if [ -e tls ] || [ -L tls ] || [ -e "$replication_secret" ] || [ -L "$replication_secret" ]; then
-  echo "Refusing to overwrite existing TLS or replication-secret material." >&2
+if [ -e tls ] || [ -L tls ]; then
+  echo "Refusing to overwrite existing TLS material." >&2
   exit 1
 fi
+for secret_file in "$provider_admin_secret" "$consumer_admin_secret" "$replication_secret"; do
+  if [ -e "$secret_file" ] || [ -L "$secret_file" ]; then
+    echo "Refusing to overwrite existing secret [$secret_file]." >&2
+    exit 1
+  fi
+done
 
 umask 077
 mkdir -p secrets
 mkdir tls
-openssl rand -hex 32 >"$replication_secret"
+# Keep generated credential files byte-exact for tools such as `ldapsearch -y`,
+# which treat a line terminator as password data. Separate assignments preserve
+# each OpenSSL exit status under `set -e` before printf writes the secret.
+generated_secret=$(openssl rand -hex 32)
+printf '%s' "$generated_secret" >"$provider_admin_secret"
+generated_secret=$(openssl rand -hex 32)
+printf '%s' "$generated_secret" >"$consumer_admin_secret"
+generated_secret=$(openssl rand -hex 32)
+printf '%s' "$generated_secret" >"$replication_secret"
+unset generated_secret
 
 # Git Bash rewrites slash-prefixed arguments as Windows paths unless /CN= is
 # excluded from MSYS argument conversion for these OpenSSL commands.
@@ -44,6 +61,6 @@ rm tls/provider.csr tls/provider.ext tls/consumer.csr tls/consumer.ext tls/ca.sr
 # service-readable. chmod does not configure Windows ACLs; the example README
 # documents the host-side protection required there.
 chmod 644 tls/*.crt
-chmod 600 tls/*.key "$replication_secret"
+chmod 600 tls/*.key "$provider_admin_secret" "$consumer_admin_secret" "$replication_secret"
 
-echo "Created local TLS material and the replication password."
+echo "Created local TLS material, separate administrator passwords, and the replication password."

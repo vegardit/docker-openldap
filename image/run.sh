@@ -37,6 +37,30 @@ if [[ -f ${INIT_SH_FILE:-} ]]; then
   source "$INIT_SH_FILE"
 fi
 
+# INIT_SH_FILE may change shell tracing globally. Keep xtrace disabled for the rest
+# of the entrypoint because restoring it after each sensitive operation would make
+# later additions another opportunity to expose a credential in container logs.
+set +x
+
+# The hook may use `set -a` while preparing exported values, but leaving allexport
+# enabled would also expose private entrypoint variables assigned later. Existing
+# exports remain intact; only automatic export of future assignments stops.
+set +a
+
+# Docker ENV values remain exported after ordinary shell assignment. Keep the
+# compatibility input available through the custom init hook, then remove the
+# public variable before later bootstrap children and the production daemon can
+# inherit it. Keeping the password out of generic LDAP_INIT_ interpolation also
+# treats secret bytes as opaque.
+if ! unset root_user_password 2>/dev/null; then
+  log ERROR "INIT_SH_FILE must not make the private root_user_password variable readonly"
+  exit 1
+fi
+# Unsetting first also removes an export attribute inherited from a same-named
+# container variable or assigned by INIT_SH_FILE.
+declare root_user_password=${LDAP_INIT_ROOT_USER_PW:-}
+unset LDAP_INIT_ROOT_USER_PW
+
 
 # display slapd build info
 slapd -VVV 2>&1 | log INFO || true
@@ -91,6 +115,74 @@ source /opt/tls.sh
 # This phase mutates normalized TLS variables and the final listener selection,
 # so it must remain before initialization and before the first temporary slapd.
 tls_prepare || exit 1
+
+
+function load_root_user_password_file() {
+  local source=$1
+  local encoded_password
+  local decoded_password_with_sentinel
+  local -i encoded_length
+  local -i padding=0
+  local -i expected_byte_count
+  local LC_ALL=C
+
+  # Root-password files cross the same root/openldap boundary as TLS inputs. A
+  # service-readable source must be opened with service authority; root may open a
+  # protected source only when openldap cannot replace its path or any ancestor.
+  if tls_source_is_readable_file "$source"; then
+    if ! encoded_password=$(run_as_openldap /usr/bin/base64 --wrap=0 -- "$source"); then
+      log ERROR "Cannot read LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+      return 1
+    fi
+  elif tls_source_is_trusted_root_file "$source"; then
+    if ! encoded_password=$(/usr/bin/base64 --wrap=0 -- "$source"); then
+      log ERROR "Cannot read LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+      return 1
+    fi
+  else
+    log ERROR "LDAP_INIT_ROOT_USER_PW_FILE [$source] must name a readable regular file whose path is protected from the openldap service user"
+    return 1
+  fi
+
+  encoded_length=${#encoded_password}
+  [[ $encoded_password == *== ]] && padding=2
+  [[ $encoded_password != *== && $encoded_password == *= ]] && padding=1
+  expected_byte_count=$((encoded_length * 3 / 4 - padding))
+
+  # The sentinel prevents command substitution from discarding password-ending LF
+  # bytes. Base64 also lets the source be opened exactly once with the chosen
+  # identity while keeping arbitrary non-NUL bytes representable until decoding.
+  if ! decoded_password_with_sentinel=$(
+      /usr/bin/base64 --decode <<<"$encoded_password" || exit 1
+      printf '\034'
+    ); then
+    log ERROR "Cannot decode LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+    return 1
+  fi
+  root_user_password=${decoded_password_with_sentinel%$'\034'}
+
+  # Bash silently removes NUL bytes from command-substitution output. Comparing
+  # against the encoded source length turns that credential mutation into a hard
+  # failure instead of initializing LDAP with a different password.
+  if (( ${#root_user_password} != expected_byte_count )); then
+    log ERROR "LDAP_INIT_ROOT_USER_PW_FILE must not contain NUL bytes"
+    return 1
+  fi
+
+  # Secret generators commonly append one line terminator. Remove exactly one so
+  # additional LF bytes remain intentional password data, and accept CRLF without
+  # leaving a stray CR in credentials created on Windows.
+  if [[ $root_user_password == *$'\r\n' ]]; then
+    root_user_password=${root_user_password%$'\r\n'}
+  elif [[ $root_user_password == *$'\n' ]]; then
+    root_user_password=${root_user_password%$'\n'}
+  fi
+
+  if [[ -z $root_user_password ]]; then
+    log ERROR "LDAP_INIT_ROOT_USER_PW_FILE must not be empty"
+    return 1
+  fi
+}
 
 
 #################################################################
@@ -271,14 +363,34 @@ if [ ! -e "$initialized_file" ]; then
     exit 1
   fi
 
-  if [[ -z ${LDAP_INIT_ROOT_USER_PW:-} ]]; then
-    log ERROR "LDAP_INIT_ROOT_USER_PW variable is not set!"
-    exit 1
+  root_user_password_source_file=""
+  if [[ -n ${LDAP_INIT_ROOT_USER_PW_FILE:-} ]]; then
+    root_user_password_source_file=$LDAP_INIT_ROOT_USER_PW_FILE
+  elif [[ -e /run/secrets/ldap-admin-password || -L /run/secrets/ldap-admin-password ]]; then
+    # An existing default path is an intentional secret selection. A broken link,
+    # directory, or unreadable mount must fail closed instead of reviving an old
+    # environment password.
+    root_user_password_source_file=/run/secrets/ldap-admin-password
   fi
 
-  # shellcheck disable=SC2034  # LDAP_INIT_ROOT_USER_PW_HASHED appears unused
-  LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -s "${LDAP_INIT_ROOT_USER_PW}")
-  # LDAP_INIT_ROOT_USER_PW_HASHED is referenced in /opt/ldifs/init_mdb_acls.ldif
+  if [[ -n $root_user_password_source_file ]]; then
+    load_root_user_password_file "$root_user_password_source_file" || exit 1
+    log INFO "Using the root user password from LDAP_INIT_ROOT_USER_PW_FILE [$root_user_password_source_file]"
+  else
+    if [[ -z $root_user_password ]]; then
+      log ERROR "Set LDAP_INIT_ROOT_USER_PW or provide LDAP_INIT_ROOT_USER_PW_FILE"
+      exit 1
+    fi
+  fi
+
+  # Both slappasswd -T and the LDAP clients' -y option accept a path. Bash process
+  # substitution supplies that path through an anonymous pipe, keeping the password
+  # out of argv and exported environments without creating a credential file.
+  # shellcheck disable=SC2034  # Referenced in /opt/ldifs/init_mdb.ldif.
+  if ! LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -T <(printf '%s' "$root_user_password")); then
+    log ERROR "Cannot hash the root user password"
+    exit 1
+  fi
 
   if [[ -z ${LDAP_INIT_ORG_DN:-} ]]; then
     log ERROR "LDAP_INIT_ORG_DN variable is not set!"
@@ -528,11 +640,11 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     # entries that have the same DNs but no replication metadata.
     ldif modify -Y EXTERNAL /opt/ldifs/init_replication_consumer.ldif
   else
-    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_tree.ldif
-    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_ppolicy.ldif
-    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_org_entries.ldif
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_tree.ldif
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_ppolicy.ldif
+    ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_entries.ldif
     if [[ $replication_role == provider ]]; then
-      ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -w "$LDAP_INIT_ROOT_USER_PW" /opt/ldifs/init_replication_provider_account.ldif
+      ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_replication_provider_account.ldif
     fi
 
     if [[ -d /opt/ldifs/custom ]]; then
@@ -562,12 +674,16 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
           # and the initialized marker must remain unwritten after partial work.
           ldif modify -a -x \
             -D "$LDAP_INIT_ROOT_USER_DN" \
-            -w "$LDAP_INIT_ROOT_USER_PW" \
+            -y <(printf '%s' "$root_user_password") \
             "$custom_ldif"
         done
       )
     fi
   fi
+
+  # Keep the private value only through the last authenticated bootstrap import.
+  # It was never exported, so unsetting it here also leaves no child-visible copy.
+  unset root_user_password
 
   log INFO "---------------------------------------"
 
@@ -577,6 +693,9 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
   prestart_slapd stop
 
 else
+  # Existing installations do not need the bootstrap credential at all. Discard
+  # the private compatibility copy before migration helpers start child processes.
+  unset root_user_password
   # System is already initialized - check for migrations
   migrate_legacy_ppolicy_schema "$initialized_file" || exit 1
   ppm_detect_migration "$initialized_file" "$config_version" || exit 1

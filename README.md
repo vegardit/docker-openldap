@@ -53,6 +53,7 @@ LDAP_INIT_ORG_ATTR_O='' # optional, if not defined will be derived from LDAP_INI
 LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}'
 LDAP_INIT_PASSWORD_RESET_GROUP_DN='cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}' # users in this group can set password/sshPublicKey attribute of other users
 LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}'
+LDAP_INIT_ROOT_USER_PW_FILE='' # optional path; /run/secrets/ldap-admin-password is auto-detected
 LDAP_INIT_ROOT_USER_PW='changeit'
 LDAP_INIT_RFC2307BIS_SCHEMA=0 # 0=use NIS (RFC2307) schema, 1=use RFC2307bis schema
 LDAP_INIT_ALLOW_CONFIG_ACCESS='true' # if set to true, the "cn=config" namespace can be read/edited by LDAP admins
@@ -100,6 +101,34 @@ Environment variables can for example be set in one of the following ways:
      vegardit/openldap
    ```
 
+#### Root password file
+
+For a new LDAP database, prefer a mounted password file over `LDAP_INIT_ROOT_USER_PW`.
+The image automatically uses `/run/secrets/ldap-admin-password` when that path exists.
+Set `LDAP_INIT_ROOT_USER_PW_FILE` only when the file is mounted elsewhere:
+
+```sh
+install -d -m 700 "$PWD/ldap-secrets"
+printf '%s\n' 'newpassword' >"$PWD/ldap-secrets/ldap-admin-password"
+chmod 600 "$PWD/ldap-secrets/ldap-admin-password"
+docker run -itd \
+  -e LDAP_INIT_ORG_DN='DC=example,DC=com' \
+  --mount "type=bind,src=$PWD/ldap-secrets/ldap-admin-password,dst=/run/secrets/ldap-admin-password,readonly" \
+  -v /my_data/ldap/var/:/var/lib/ldap/ \
+  -v /my_data/ldap/etc/:/etc/ldap/slapd.d/ \
+  -p 389:389 \
+  vegardit/openldap
+```
+
+Docker Compose and Docker Swarm secrets are also mounted below `/run/secrets` by default.
+The selected file takes precedence over `LDAP_INIT_ROOT_USER_PW` and must be a non-empty regular file.
+A service-readable source is opened as the effective `openldap` user.
+A source readable only by root must use an absolute, link-free path whose file and parent directories are neither owned nor writable by `openldap`; this prevents the service from replacing the path before root opens it.
+A selected file that is missing, unreadable, empty, or outside these accepted source classes stops initialization instead of falling back to the environment.
+One terminating LF or CRLF is ignored; quotes and backslashes remain part of the password.
+The entrypoint does not copy the password into its filesystem; it passes the in-memory value to OpenLDAP tools through anonymous file descriptors.
+Like the other `LDAP_INIT_` inputs, the password file is used only for first initialization and does not change an existing root password.
+
 #### Supported initialization mounts
 
 These are the supported mounts for bootstrap customization. Persistent volumes, TLS files, and replication secrets are described in their own sections.
@@ -107,6 +136,7 @@ These are the supported mounts for bootstrap customization. Persistent volumes, 
 | Container target | Purpose | When it is used |
 |---|---|---|
 | Path set by `INIT_SH_FILE` | Source a shell script that can set image variables | Every container start, before configuration checks |
+| `/run/secrets/ldap-admin-password` | Set the initial root password without an environment variable | First initialization |
 | `/opt/ldifs/custom-schema/` | Add dynamic-configuration schema LDIFs | First initialization, on every node |
 | `/opt/ldifs/custom/` | Add directory data LDIFs | First initialization, except on replication consumers |
 | `/opt/ldifs/init_org_tree.ldif` | Replace the initial organization tree | First initialization, except on replication consumers |
