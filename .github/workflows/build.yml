@@ -124,10 +124,16 @@ jobs:
         set -x
         if [[ $GITHUB_REF_NAME == 'main' && $GITHUB_EVENT_NAME != 'pull_request' && -z "$ACT" ]]; then
           echo "DOCKER_PUSH_GHCR=true" >> "$GITHUB_ENV"
-          echo "DOCKER_PUSH_GHCR=true" >> $GITHUB_OUTPUT
+          echo "DOCKER_PUSH_GHCR=true" >> "$GITHUB_OUTPUT"
           if [[ -n "${{ secrets.DOCKER_HUB_USERNAME }}" ]]; then
             echo "DOCKER_PUSH=true" >> "$GITHUB_ENV"
           fi
+        elif [[ $GITHUB_REF_NAME == 'dev' && $GITHUB_EVENT_NAME == 'push' && -z "$ACT" ]]; then
+          # Development builds stay GHCR-only and use one moving tag so they
+          # cannot overwrite Docker Hub or stable GHCR release aliases.
+          echo "DOCKER_PUSH_GHCR=true" >> "$GITHUB_ENV"
+          echo "DOCKER_PUSH_GHCR=true" >> "$GITHUB_OUTPUT"
+          echo "DOCKER_IMAGE_TAG=dev" >> "$GITHUB_ENV"
         fi
 
 

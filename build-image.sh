@@ -33,7 +33,7 @@ declare -A image_meta=(
 )
 
 declare -a tags=()
-tags+=("latest")
+tags+=("${DOCKER_IMAGE_TAG:-latest}")
 
 
 #################################################
@@ -166,9 +166,13 @@ echo "ldap_version=$ldap_version"
 #################################################
 # extend tags
 #################################################
-tags+=("${ldap_version}")       # :2.6.10
-tags+=("${ldap_version%.*}.x")  # :2.6.x
-tags+=("${ldap_version%%.*}.x") # :2.x
+# A branch channel publishes only its moving tag so a development build cannot
+# overwrite the stable version aliases derived from the packaged LDAP version.
+if [[ -z ${DOCKER_IMAGE_TAG:-} ]]; then
+  tags+=("${ldap_version}")       # :2.6.10
+  tags+=("${ldap_version%.*}.x")  # :2.6.x
+  tags+=("${ldap_version%%.*}.x") # :2.x
+fi
 
 
 #################################################
