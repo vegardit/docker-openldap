@@ -76,7 +76,7 @@ docker rm "$container" >/dev/null
 # newline.
 start_container \
   --bootstrap-ldifs \
-  --record-slapcat-uids \
+  --record-offline-tool-uids \
   --env INIT_SH_FILE=/opt/ldifs/custom/.init.sh \
   --env PAUSE_INIT_FOR_LISTENER_TEST=true \
   --env LDAP_INIT_RFC2307BIS_SCHEMA=1 \
@@ -114,10 +114,10 @@ if [[ $temporary_slapd_arguments != *$'\n-h\nldapi:///\n'* ]]; then
 fi
 
 wait_until_ready
-# Successful RFC2307bis initialization proves its export ran. This startup then
-# reaches both later configuration scans; require the service UID from every
-# invocation rather than relying on a hostile module to reveal root execution.
-assert_slapcat_service_uid "$container"
+# Successful RFC2307bis initialization reaches both offline configuration tools.
+# Require the service UID from every invocation rather than relying on a hostile
+# module to reveal root execution.
+assert_offline_config_tools_service_uid "$container"
 if docker exec "$container" test -e "$initial_backup_pending_marker"; then
   echo "An existing valid initial-backup marker was not consumed after export." >&2
   exit 1

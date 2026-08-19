@@ -35,7 +35,7 @@ custom_schema_ldif_dir="$test_dir/custom-schema"
 custom_policy_ldif_file="$test_dir/init_org_ppolicy.ldif"
 invalid_schema_path_file="$test_dir/custom-schema-file"
 ldapmodify_failure_wrapper="$test_dir/ldapmodify"
-slapcat_uid_entrypoint="$test_dir/slapcat-uid-entrypoint"
+offline_tool_uid_entrypoint="$test_dir/offline-tool-uid-entrypoint"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
 docker_ca_file="$tls_dir/ca.crt"
 docker_cert_file="$tls_dir/server.crt"
@@ -46,7 +46,7 @@ docker_custom_schema_ldif_dir="$custom_schema_ldif_dir"
 docker_custom_policy_ldif_file="$custom_policy_ldif_file"
 docker_invalid_schema_path_file="$invalid_schema_path_file"
 docker_ldapmodify_failure_wrapper="$ldapmodify_failure_wrapper"
-docker_slapcat_uid_entrypoint="$slapcat_uid_entrypoint"
+docker_offline_tool_uid_entrypoint="$offline_tool_uid_entrypoint"
 root_dn='uid=admin,DC=example,DC=com'
 root_password='test-only-password'
 guest_dn='uid=guest1,ou=External,ou=Users,DC=example,DC=com'
@@ -84,7 +84,7 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_custom_policy_ldif_file=$(cygpath -w "$docker_custom_policy_ldif_file")
   docker_invalid_schema_path_file=$(cygpath -w "$docker_invalid_schema_path_file")
   docker_ldapmodify_failure_wrapper=$(cygpath -w "$docker_ldapmodify_failure_wrapper")
-  docker_slapcat_uid_entrypoint=$(cygpath -w "$docker_slapcat_uid_entrypoint")
+  docker_offline_tool_uid_entrypoint=$(cygpath -w "$docker_offline_tool_uid_entrypoint")
 fi
 
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
@@ -130,7 +130,7 @@ function create_fresh_volumes() {
 
 function start_container() {
   local fixture_mode=
-  local record_slapcat_uids=false
+  local record_offline_tool_uids=false
   local -a command_options=()
   while (($#)); do
     case "$1" in
@@ -138,17 +138,17 @@ function start_container() {
         fixture_mode=$1
         shift
         ;;
-      --record-slapcat-uids)
-        record_slapcat_uids=true
+      --record-offline-tool-uids)
+        record_offline_tool_uids=true
         shift
         ;;
       *) break ;;
     esac
   done
-  if [[ $record_slapcat_uids == true ]]; then
+  if [[ $record_offline_tool_uids == true ]]; then
     # Keep tini as PID 1 and invoke the copied fixture through sh because Docker
     # Desktop cannot preserve an executable mode from every Windows filesystem.
-    command_options=(/bin/sh /opt/test-slapcat-uid-entrypoint /bin/bash /opt/run.sh)
+    command_options=(/bin/sh /opt/test-offline-tool-uid-entrypoint /bin/bash /opt/run.sh)
   fi
 
   docker create --name "$container" \
@@ -179,8 +179,8 @@ function start_container() {
       docker cp "$docker_ldapmodify_failure_wrapper" "$container:/usr/local/bin/ldapmodify"
       ;;
   esac
-  if [[ $record_slapcat_uids == true ]]; then
-    docker cp "$docker_slapcat_uid_entrypoint" "$container:/opt/test-slapcat-uid-entrypoint"
+  if [[ $record_offline_tool_uids == true ]]; then
+    docker cp "$docker_offline_tool_uid_entrypoint" "$container:/opt/test-offline-tool-uid-entrypoint"
   fi
   docker start "$container" >/dev/null
 }
@@ -217,20 +217,25 @@ function wait_until_ready() {
   return 1
 }
 
-function assert_slapcat_service_uid() {
+function assert_offline_config_tools_service_uid() {
   local target_container=$1
   local openldap_uid
   local observed_uids
+  local tool
 
   openldap_uid=$(docker exec "$target_container" id -u openldap)
-  if ! observed_uids=$(docker exec "$target_container" sort -u /run/slapcat-uids); then
-    echo "The slapcat UID probe did not produce a readable record." >&2
-    return 1
-  fi
-  if [[ $observed_uids != "$openldap_uid" ]]; then
-    printf 'slapcat ran with unexpected UID(s): [%s].\n' "$observed_uids" >&2
-    return 1
-  fi
+  # Keep each tool's observations separate so a safe slapcat invocation cannot
+  # hide a privileged slapadd invocation behind the same unique-UID assertion.
+  for tool in slapcat slapadd; do
+    if ! observed_uids=$(docker exec "$target_container" sort -u "/run/$tool-uids"); then
+      printf 'The %s UID probe did not produce a readable record.\n' "$tool" >&2
+      return 1
+    fi
+    if [[ $observed_uids != "$openldap_uid" ]]; then
+      printf '%s ran with unexpected UID(s): [%s].\n' "$tool" "$observed_uids" >&2
+      return 1
+    fi
+  done
 }
 
 function start_replication_node() {
@@ -482,30 +487,33 @@ fi
 SH
 chmod +x "$ldapmodify_failure_wrapper"
 
-# The probe replaces slapcat only inside selected test containers. It records the
-# effective UID at the executable boundary, then delegates unchanged, so the test
-# detects privileged configuration reads without relying on a hostile LDAP module.
-cat >"$slapcat_uid_entrypoint" <<'SH'
+# The probe replaces offline configuration tools only inside selected test
+# containers. It records the effective UID at each executable boundary, then
+# delegates unchanged, so the test does not need a hostile LDAP module.
+cat >"$offline_tool_uid_entrypoint" <<'SH'
 #!/bin/sh
 set -eu
 
 # OpenLDAP's hard-linked admin binary selects its mode from argv[0]. Keep the
-# slapcat basename when moving it aside or the delegate can behave like slapadd.
-mkdir /run/real-slapcat
-mv /usr/sbin/slapcat /run/real-slapcat/slapcat
-# Fixed calls reach the wrapper as openldap, so the root-created record must be
-# service-writable while still allowing the baseline's root calls to append.
-install -o openldap -g openldap -m 0600 /dev/null /run/slapcat-uids
-cat >/usr/sbin/slapcat <<'WRAPPER'
+# original basename when moving each link aside or the delegate can select the
+# wrong tool mode.
+for tool in slapcat slapadd; do
+  mkdir "/run/real-$tool"
+  mv "/usr/sbin/$tool" "/run/real-$tool/$tool"
+  # Fixed calls reach the wrapper as openldap, so the root-created record must be
+  # service-writable while still allowing the baseline's root calls to append.
+  install -o openldap -g openldap -m 0600 /dev/null "/run/$tool-uids"
+  cat >"/usr/sbin/$tool" <<WRAPPER
 #!/bin/sh
 set -eu
-id -u >>/run/slapcat-uids
-exec /run/real-slapcat/slapcat "$@"
+id -u >>/run/$tool-uids
+exec /run/real-$tool/$tool "\$@"
 WRAPPER
-chmod 0755 /usr/sbin/slapcat
+  chmod 0755 "/usr/sbin/$tool"
+done
 exec "$@"
 SH
-chmod +x "$slapcat_uid_entrypoint"
+chmod +x "$offline_tool_uid_entrypoint"
 
 # The second schema uses the attribute from the first. Their deliberately
 # non-padded names prove that the loader uses documented bytewise ordering.

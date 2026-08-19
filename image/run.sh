@@ -460,8 +460,10 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
 
     log INFO "Register modified slapd config with RFC2307bis schema..."
     # Command substitution strips trailing newlines; restore one for LDIF.
+    # The export retains service-controlled module directives, which slapadd loads
+    # during import. Match slapd's identity at that executable boundary.
     printf '%s\n' "$config_ldif" |
-       slapadd -F /etc/ldap/slapd.d -n 0 | log INFO
+       run_as_openldap /usr/sbin/slapadd -F /etc/ldap/slapd.d -n 0 | log INFO
     chown openldap:openldap -R /etc/ldap/slapd.d
   fi
 
