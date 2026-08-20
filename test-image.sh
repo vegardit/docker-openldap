@@ -24,6 +24,7 @@ provider_config_volume="$test_id-provider-config"
 provider_data_volume="$test_id-provider-data"
 consumer_container="$test_id-consumer"
 root_password_container="$test_id-root-password"
+replication_password_path_container="$test_id-replication-password-path"
 consumer_config_volume="$test_id-consumer-config"
 consumer_data_volume="$test_id-consumer-data"
 test_dir=$(mktemp -d)
@@ -38,6 +39,7 @@ invalid_schema_path_file="$test_dir/custom-schema-file"
 ldapmodify_failure_wrapper="$test_dir/ldapmodify"
 offline_tool_uid_entrypoint="$test_dir/offline-tool-uid-entrypoint"
 root_password_env_probe_file="$script_dir/tests/image/root-password-env-probe.sh"
+replication_password_path_probe_file="$script_dir/tests/image/replication-password-path-probe.sh"
 replication_password_file="$replication_secret_dir/ldap-replication-password"
 root_password_secret_dir="$test_dir/root-password/secrets"
 root_password_secret_file="$root_password_secret_dir/ldap-admin-password"
@@ -52,6 +54,7 @@ docker_invalid_schema_path_file="$invalid_schema_path_file"
 docker_ldapmodify_failure_wrapper="$ldapmodify_failure_wrapper"
 docker_offline_tool_uid_entrypoint="$offline_tool_uid_entrypoint"
 docker_root_password_env_probe_file="$root_password_env_probe_file"
+docker_replication_password_path_probe_file="$replication_password_path_probe_file"
 docker_root_password_secret_dir="$root_password_secret_dir"
 docker_root_password_secret_file="$root_password_secret_file"
 root_dn='uid=admin,DC=example,DC=com'
@@ -61,6 +64,7 @@ custom_entry_dn='cn=custom-entry,ou=Custom,DC=example,DC=com'
 replication_dn='uid=replicator,DC=example,DC=com'
 # The embedded space verifies that LDIF interpolation preserves quoted credentials.
 replication_password='test-only replication password'
+replication_password_path_marker='test-only-root-disclosure-marker'
 replication_group_dn='cn=replication-group,DC=example,DC=com'
 replication_member_dn='uid=replication-member,DC=example,DC=com'
 native_ppm_config=$'minQuality 0\nforbiddenChars @'
@@ -93,6 +97,7 @@ if [[ $OSTYPE == "cygwin" || $OSTYPE == "msys" ]]; then
   docker_ldapmodify_failure_wrapper=$(cygpath -w "$docker_ldapmodify_failure_wrapper")
   docker_offline_tool_uid_entrypoint=$(cygpath -w "$docker_offline_tool_uid_entrypoint")
   docker_root_password_env_probe_file=$(cygpath -w "$docker_root_password_env_probe_file")
+  docker_replication_password_path_probe_file=$(cygpath -w "$docker_replication_password_path_probe_file")
   docker_root_password_secret_dir=$(cygpath -w "$docker_root_password_secret_dir")
   docker_root_password_secret_file=$(cygpath -w "$docker_root_password_secret_file")
 fi
@@ -101,6 +106,7 @@ fi
 function cleanup() {
   docker rm --force --volumes \
     "$container" "$provider_container" "$consumer_container" "$root_password_container" \
+    "$replication_password_path_container" \
     >/dev/null 2>&1 || true
   docker volume rm --force \
     "$config_volume" "$data_volume" \
@@ -248,6 +254,49 @@ function assert_offline_config_tools_service_uid() {
       return 1
     fi
   done
+}
+
+function assert_initialization_rejected() {
+  local target_container=$1
+  local expected_message=$2
+  local rejected_case=$3
+  local forbidden_persisted_value=${4:-}
+  local container_running=true
+  local exit_code
+  local output
+
+  # Successful initialization keeps slapd in the foreground. Bound this wait so
+  # a missing fail-closed check becomes a useful assertion instead of a hung suite.
+  for _ in {1..40}; do
+    container_running=$(docker inspect --format '{{.State.Running}}' "$target_container")
+    [[ $container_running == false ]] && break
+    sleep 0.25
+  done
+  output=$(docker logs "$target_container" 2>&1)
+  if [[ $container_running == true ]]; then
+    # The optional marker makes authority-boundary regressions prove disclosure,
+    # not merely that an initialization expected to fail happened to continue.
+    if [[ -n $forbidden_persisted_value ]] &&
+        docker exec --user openldap "$target_container" \
+          grep -R -F -- "$forbidden_persisted_value" /etc/ldap/slapd.d >/dev/null 2>&1; then
+      printf '%s\n' "$output" >&2
+      echo "$rejected_case exposed a root-only marker in service-readable configuration." >&2
+    else
+      printf '%s\n' "$output" >&2
+      echo "$rejected_case unexpectedly continued initialization." >&2
+    fi
+    docker rm --force --volumes "$target_container" >/dev/null
+    return 1
+  fi
+
+  exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$target_container")
+  docker rm --force --volumes "$target_container" >/dev/null
+  if [[ $exit_code == 0 || $output != *"$expected_message"* ||
+        $output == *"Starting slapd for init/migration..."* ]]; then
+    printf '%s\n' "$output" >&2
+    echo "$rejected_case did not fail before LDAP initialization." >&2
+    return 1
+  fi
 }
 
 function start_replication_node() {

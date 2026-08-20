@@ -8,39 +8,6 @@
 # Root-password secret integration checks. This file is sourced by test-image.sh
 # and uses its container names, temporary directory, and readiness helper.
 
-function assert_root_password_container_rejected() {
-  local root_password_container=$1
-  local expected_message=$2
-  local rejected_case=$3
-  local container_running=true
-  local exit_code
-  local output
-
-  # Successful initialization keeps slapd in the foreground. Bound this wait so
-  # a missing fail-closed check becomes a useful assertion instead of a hung suite.
-  for _ in {1..40}; do
-    container_running=$(docker inspect --format '{{.State.Running}}' "$root_password_container")
-    [[ $container_running == false ]] && break
-    sleep 0.25
-  done
-  output=$(docker logs "$root_password_container" 2>&1)
-  if [[ $container_running == true ]]; then
-    docker rm --force --volumes "$root_password_container" >/dev/null
-    printf '%s\n' "$output" >&2
-    echo "$rejected_case unexpectedly continued initialization." >&2
-    return 1
-  fi
-
-  exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$root_password_container")
-  docker rm --force --volumes "$root_password_container" >/dev/null
-  if [[ $exit_code == 0 || $output != *"$expected_message"* ||
-        $output == *"Starting slapd for init/migration..."* ]]; then
-    printf '%s\n' "$output" >&2
-    echo "$rejected_case did not fail before LDAP initialization." >&2
-    return 1
-  fi
-}
-
 # shellcheck disable=SC2154,SC2329  # Globals and invocation are supplied by test-image.sh.
 function test_root_password_file() {
   local container_logs
@@ -60,7 +27,7 @@ function test_root_password_file() {
     --env LDAP_INIT_ROOT_USER_PW_FILE=/run/secrets/missing-admin-password \
     "$image_name" >/dev/null
   docker start "$root_password_container" >/dev/null
-  assert_root_password_container_rejected \
+  assert_initialization_rejected \
     "$root_password_container" \
     "must name a readable regular file" \
     "A missing explicit root password file"
@@ -76,7 +43,7 @@ function test_root_password_file() {
   # Docker-in-Docker layout. The basename keeps the production /run/secrets path.
   docker cp "$docker_root_password_secret_dir" "$root_password_container:/run/"
   docker start "$root_password_container" >/dev/null
-  assert_root_password_container_rejected \
+  assert_initialization_rejected \
     "$root_password_container" \
     "LDAP_INIT_ROOT_USER_PW_FILE must not be empty" \
     "An empty root password file"
@@ -92,7 +59,7 @@ function test_root_password_file() {
   docker cp "$docker_root_password_env_probe_file" \
     "$root_password_container:/opt/root-password-env-probe.sh"
   docker start "$root_password_container" >/dev/null
-  assert_root_password_container_rejected \
+  assert_initialization_rejected \
     "$root_password_container" \
     "must name a readable regular file" \
     "A service-controlled root-password link"
@@ -105,7 +72,7 @@ function test_root_password_file() {
     "$image_name" >/dev/null
   docker cp "$docker_root_password_secret_dir" "$root_password_container:/run/"
   docker start "$root_password_container" >/dev/null
-  assert_root_password_container_rejected \
+  assert_initialization_rejected \
     "$root_password_container" \
     "must not contain NUL bytes" \
     "A root-password file containing NUL"

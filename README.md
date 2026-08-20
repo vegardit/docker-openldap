@@ -562,26 +562,35 @@ LDAP_INIT_REPLICATION_ROLE=consumer
 LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider
 ```
 
-Both nodes must mount the same replication-password secret at `/run/secrets/ldap-replication-password`, or set `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to another readable file.
-Use a generated, high-entropy value. The provider deliberately exempts this service account from password lockout so failed authentication attempts cannot lock the account and stop replication.
-Mount each node's server certificate and key at the default TLS paths; `LDAP_TLS_ENABLED=auto` enables TLS when both satisfy the TLS source requirements above.
-The consumer must mount the CA certificate on every start so it can verify the provider.
-The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as above.
+After setting the roles, provide these files:
 
-Use separate, initially empty config and data volumes for each node. The image skips local sample entries on a consumer so its first synchronization can populate the database.
-On a new consumer, the periodic backup worker waits for that first synchronization and does not create `LDAP_BACKUP_FILE` from an empty or partial replica.
-Both nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
-The provider creates `uid=replicator,${LDAP_INIT_ORG_DN}` for its replication account and `cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}` for that account's non-locking password policy.
-Because `uid` and `cn` are unique throughout the organization suffix, custom initialization LDIF must not use `uid: replicator` or `cn: ReplicationPasswordPolicy` on any other entry either.
-The provider certificate's Subject Alternative Name (SAN) must match the hostname in `LDAP_INIT_REPLICATION_PROVIDER_URI`.
-If applications connect to the consumer over LDAPS, the consumer also needs a certificate whose SAN matches its client-facing hostname.
+- **Shared replication password**
+  - Mount the same generated, high-entropy secret on both nodes at `/run/secrets/ldap-replication-password`. Use `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to select another path.
+  - The file may be readable by `openldap`. A root-only file must use an absolute, link-free path whose file and parent directories are neither owned nor writable by `openldap`.
+  - Service-readable files are opened as `openldap`; this prevents a service-controlled path from making the root entrypoint disclose another root-only file.
+  - The provider exempts the replication account from password lockout so failed authentication attempts cannot stop replication.
+  - On a consumer, OpenLDAP stores the password in plaintext in its service-readable `cn=config` so syncrepl can reconnect. Source-file permissions protect only the mounted copy, so also protect the configuration volume and access to the container.
+- **TLS certificates**
+  - Mount each node's server certificate and key at the default TLS paths. `LDAP_TLS_ENABLED=auto` enables TLS when both satisfy the TLS source requirements above.
+  - Mount the CA certificate on the consumer on every start so it can verify the provider.
+  - The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as shown above.
+  - The provider certificate's Subject Alternative Name (SAN) must match the hostname in `LDAP_INIT_REPLICATION_PROVIDER_URI`.
+  - If applications connect to the consumer over LDAPS, its certificate SAN must also match its client-facing hostname.
+
+Use these initialization rules:
+
+- **Separate volumes:** Give each node its own initially empty config and data volumes.
+- **Consumer bootstrap:** The consumer skips local sample entries so its first synchronization can populate the database. Its periodic backup worker waits for that synchronization instead of backing up an empty or partial replica.
+- **Matching directory settings:** Both nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
+- **Reserved entries:** The provider creates `uid=replicator,${LDAP_INIT_ORG_DN}` and `cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}`. Custom initialization LDIF must not reuse `uid: replicator` or `cn: ReplicationPasswordPolicy` on another entry because `uid` and `cn` are unique throughout the organization suffix.
 
 See the [complete Docker Compose example](example/docker-compose/syncrepl/) for local certificates, startup, and verification commands.
 
-Replication settings are applied only while a new config volume is initialized. Changing the bootstrap variables or secret later does not update the persisted `cn=config`.
-OpenLDAP stores the replication password in plaintext in the consumer config volume, so protect that volume accordingly.
-For configurations beyond one provider and one read-only consumer, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
-The environment-variable bootstrap supports only strict LDAPS with simple-bind authentication.
+The environment-variable bootstrap has these limits:
+
+- It is applied only while a new config volume is initialized. Changing the bootstrap variables or secret later does not update the persisted `cn=config`.
+- It supports only strict LDAPS with simple-bind authentication.
+- For configurations beyond one provider and one read-only consumer, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
 
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user

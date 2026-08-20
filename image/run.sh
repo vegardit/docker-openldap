@@ -117,57 +117,74 @@ source /opt/tls.sh
 tls_prepare || exit 1
 
 
-function load_root_user_password_file() {
+function load_secret_file() {
   local source=$1
-  local encoded_password
-  local decoded_password_with_sentinel
+  local setting_name=$2
+  local destination_name=$3
+  local encoded_secret
+  local decoded_secret
+  local decoded_secret_with_sentinel
   local -i encoded_length
   local -i padding=0
   local -i expected_byte_count
   local LC_ALL=C
 
-  # Root-password files cross the same root/openldap boundary as TLS inputs. A
+  # Credential files cross the same root/openldap boundary as TLS inputs. A
   # service-readable source must be opened with service authority; root may open a
   # protected source only when openldap cannot replace its path or any ancestor.
   if tls_source_is_readable_file "$source"; then
-    if ! encoded_password=$(run_as_openldap /usr/bin/base64 --wrap=0 -- "$source"); then
-      log ERROR "Cannot read LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+    if ! encoded_secret=$(run_as_openldap /usr/bin/base64 --wrap=0 -- "$source"); then
+      log ERROR "Cannot read $setting_name [$source]"
       return 1
     fi
   elif tls_source_is_trusted_root_file "$source"; then
-    if ! encoded_password=$(/usr/bin/base64 --wrap=0 -- "$source"); then
-      log ERROR "Cannot read LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+    if ! encoded_secret=$(/usr/bin/base64 --wrap=0 -- "$source"); then
+      log ERROR "Cannot read $setting_name [$source]"
       return 1
     fi
   else
-    log ERROR "LDAP_INIT_ROOT_USER_PW_FILE [$source] must name a readable regular file whose path is protected from the openldap service user"
+    log ERROR "$setting_name [$source] must name a readable regular file that is service-readable or has a protected root-only path"
     return 1
   fi
 
-  encoded_length=${#encoded_password}
-  [[ $encoded_password == *== ]] && padding=2
-  [[ $encoded_password != *== && $encoded_password == *= ]] && padding=1
+  encoded_length=${#encoded_secret}
+  [[ $encoded_secret == *== ]] && padding=2
+  [[ $encoded_secret != *== && $encoded_secret == *= ]] && padding=1
   expected_byte_count=$((encoded_length * 3 / 4 - padding))
 
-  # The sentinel prevents command substitution from discarding password-ending LF
+  # The sentinel prevents command substitution from discarding secret-ending LF
   # bytes. Base64 also lets the source be opened exactly once with the chosen
   # identity while keeping arbitrary non-NUL bytes representable until decoding.
-  if ! decoded_password_with_sentinel=$(
-      /usr/bin/base64 --decode <<<"$encoded_password" || exit 1
+  if ! decoded_secret_with_sentinel=$(
+      /usr/bin/base64 --decode <<<"$encoded_secret" || exit 1
       printf '\034'
     ); then
-    log ERROR "Cannot decode LDAP_INIT_ROOT_USER_PW_FILE [$source]"
+    log ERROR "Cannot decode $setting_name [$source]"
     return 1
   fi
-  root_user_password=${decoded_password_with_sentinel%$'\034'}
+  decoded_secret=${decoded_secret_with_sentinel%$'\034'}
 
   # Bash silently removes NUL bytes from command-substitution output. Comparing
   # against the encoded source length turns that credential mutation into a hard
   # failure instead of initializing LDAP with a different password.
-  if (( ${#root_user_password} != expected_byte_count )); then
-    log ERROR "LDAP_INIT_ROOT_USER_PW_FILE must not contain NUL bytes"
+  if (( ${#decoded_secret} != expected_byte_count )); then
+    log ERROR "$setting_name must not contain NUL bytes"
     return 1
   fi
+
+  # Destination names are image-owned constants. Unsetting first removes any
+  # inherited export attribute so the plaintext cannot leak to bootstrap children.
+  if ! unset -v "$destination_name" 2>/dev/null; then
+    log ERROR "INIT_SH_FILE must not make the private $destination_name variable readonly"
+    return 1
+  fi
+  printf -v "$destination_name" '%s' "$decoded_secret"
+}
+
+function load_root_user_password_file() {
+  local source=$1
+
+  load_secret_file "$source" LDAP_INIT_ROOT_USER_PW_FILE root_user_password || return 1
 
   # Secret generators commonly append one line terminator. Remove exactly one so
   # additional LF bytes remain intentional password data, and accept CRLF without
@@ -482,15 +499,17 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
       # the fallback only after a role is selected so it cannot enable or reject
       # replication on an otherwise ordinary server.
       replication_bind_password_file=${LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE:-/run/secrets/ldap-replication-password}
-      if [[ ! -r $replication_bind_password_file ]]; then
-        log ERROR "LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE [$replication_bind_password_file] must name a readable secret file"
-        exit 1
-      fi
+      load_secret_file \
+        "$replication_bind_password_file" \
+        LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE \
+        LDAP_INIT_REPLICATION_BIND_PASSWORD || exit 1
 
-      LDAP_INIT_REPLICATION_BIND_PASSWORD=$(<"$replication_bind_password_file")
-      # Command substitution strips the LF from a Docker secret but leaves the
-      # CR from a Windows CRLF terminator. Remove only that trailing CR; the
-      # validation below still rejects embedded line breaks.
+      # The old Bash file read discarded every trailing LF before stripping one
+      # trailing CR. Preserve that established behavior explicitly; the root
+      # password reader intentionally has a different one-terminator policy.
+      while [[ $LDAP_INIT_REPLICATION_BIND_PASSWORD == *$'\n' ]]; do
+        LDAP_INIT_REPLICATION_BIND_PASSWORD=${LDAP_INIT_REPLICATION_BIND_PASSWORD%$'\n'}
+      done
       LDAP_INIT_REPLICATION_BIND_PASSWORD=${LDAP_INIT_REPLICATION_BIND_PASSWORD%$'\r'}
       if [[ -z $LDAP_INIT_REPLICATION_BIND_PASSWORD ]]; then
         log ERROR "LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE must not be empty"
@@ -512,11 +531,19 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
       # shellcheck disable=SC2034  # Referenced in replication LDIF templates.
       LDAP_INIT_REPLICATION_BIND_DN="uid=replicator,$LDAP_INIT_ORG_DN"
       if [[ $replication_role == provider ]]; then
-        # Bash treats trailing newlines as file terminators when it reads the
-        # secret above. Hash that normalized value too, and use stdin so the
-        # plaintext password does not appear in the slappasswd process arguments.
+        # INIT_SH_FILE can pre-export this private template name. Recreate it
+        # without that attribute so even the password hash stays out of children.
+        if ! unset -v LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED 2>/dev/null; then
+          log ERROR "INIT_SH_FILE must not make the private LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED variable readonly"
+          exit 1
+        fi
+        # Hash the normalized value through stdin so the plaintext password does
+        # not appear in the slappasswd process arguments.
         # shellcheck disable=SC2034  # Referenced in the provider account LDIF.
         LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED=$(printf '%s' "$LDAP_INIT_REPLICATION_BIND_PASSWORD" | slappasswd -T /dev/stdin)
+        # The provider account template needs only the hash. Drop the plaintext
+        # before starting slapd or any later bootstrap helper.
+        unset LDAP_INIT_REPLICATION_BIND_PASSWORD
       fi
       ;;
     *)
@@ -639,12 +666,17 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     # the image's sample tree first would make the initial refresh collide with
     # entries that have the same DNs but no replication metadata.
     ldif modify -Y EXTERNAL /opt/ldifs/init_replication_consumer.ldif
+    # The credential is now persisted in cn=config. Retain no second plaintext
+    # copy in the entrypoint after the final interpolation that needs it.
+    unset LDAP_INIT_REPLICATION_BIND_PASSWORD
   else
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_tree.ldif
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_ppolicy.ldif
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_entries.ldif
     if [[ $replication_role == provider ]]; then
       ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_replication_provider_account.ldif
+      # The account now owns the hash; later custom imports do not need access to it.
+      unset LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED
     fi
 
     if [[ -d /opt/ldifs/custom ]]; then

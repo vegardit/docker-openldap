@@ -58,6 +58,32 @@ chmod 0644 "$tls_dir/server.crt" "$tls_dir/ca.crt"
 printf '%s\r\n' "$replication_password" >"$replication_password_file"
 chmod 600 "$replication_password_file"
 
+test_step "Rejecting a service-controlled replication password link"
+docker create --name "$replication_password_path_container" \
+  --hostname replication-password-path-probe \
+  --env LDAP_BACKUP_TIME= \
+  --env LDAP_INIT_ROOT_USER_PW="$root_password" \
+  --env INIT_SH_FILE=/opt/replication-password-path-probe.sh \
+  --env REPLICATION_PASSWORD_PATH_TEST_MARKER="$replication_password_path_marker" \
+  --env LDAP_INIT_REPLICATION_ROLE=consumer \
+  --env LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider \
+  --env LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE=/run/replication-password-source/password-link \
+  --env LDAP_TLS_CERT_FILE=/opt/test-server.crt \
+  --env LDAP_TLS_KEY_FILE=/opt/test-server.key \
+  --env LDAP_TLS_CA_FILE=/opt/test-ca.crt \
+  "$image_name" >/dev/null
+docker cp "$docker_replication_password_path_probe_file" \
+  "$replication_password_path_container:/opt/replication-password-path-probe.sh"
+docker cp "$docker_cert_file" "$replication_password_path_container:/opt/test-server.crt"
+docker cp "$docker_key_file" "$replication_password_path_container:/opt/test-server.key"
+docker cp "$docker_ca_file" "$replication_password_path_container:/opt/test-ca.crt"
+docker start "$replication_password_path_container" >/dev/null
+assert_initialization_rejected \
+  "$replication_password_path_container" \
+  "must name a readable regular file" \
+  "A service-controlled replication-password link" \
+  "$replication_password_path_marker"
+
 docker network create "$replication_network" >/dev/null
 for volume in \
     "$provider_config_volume" "$provider_data_volume" \
