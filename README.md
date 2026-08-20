@@ -542,13 +542,13 @@ LDAP traffic can be encrypted in **two** complementary ways:
 
 ### <a name="syncrepl-ldaps"></a>Syncrepl over LDAPS
 
-Syncrepl copies LDAP entries between two OpenLDAP servers:
+Syncrepl copies LDAP entries from one OpenLDAP provider to one or more consumers:
 
 - The **provider** is the source server. Applications make directory changes here.
-- The **consumer** is the replica. It connects to the provider and copies its entries.
+- A **consumer** is a read-only replica. Each consumer connects to the provider and copies its entries independently.
 
-Both servers run the same image. The image configures one-way replication during their first initialization and makes the consumer read-only.
-You write LDAP entries to the provider; the consumer receives a copy and rejects local changes.
+All nodes run the same image. The image configures one-way replication during their first initialization and makes every consumer read-only.
+You write LDAP entries to the provider; each consumer receives a copy and rejects local changes.
 
 The minimum role-specific settings are:
 
@@ -565,14 +565,17 @@ LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://provider
 After setting the roles, provide these files:
 
 - **Shared replication password**
-  - Mount the same generated, high-entropy secret on both nodes at `/run/secrets/ldap-replication-password`. Use `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to select another path.
+  - Mount the same generated, high-entropy secret on the provider and every consumer at `/run/secrets/ldap-replication-password`.
+    Use `LDAP_INIT_REPLICATION_BIND_PASSWORD_FILE` to select another path.
   - The file may be readable by `openldap`. A root-only file must use an absolute, link-free path whose file and parent directories are neither owned nor writable by `openldap`.
   - Service-readable files are opened as `openldap`; this prevents a service-controlled path from making the root entrypoint disclose another root-only file.
   - The provider exempts the replication account from password lockout so failed authentication attempts cannot stop replication.
-  - On a consumer, OpenLDAP stores the password in plaintext in its service-readable `cn=config` so syncrepl can reconnect. Source-file permissions protect only the mounted copy, so also protect the configuration volume and access to the container.
+  - On every consumer, OpenLDAP stores the password in plaintext in its service-readable `cn=config` so syncrepl can reconnect.
+    Source-file permissions protect only the mounted copy, so also protect every consumer's configuration volume and access to the container.
+    Adding consumers creates additional stored copies of this credential.
 - **TLS certificates**
   - Mount each node's server certificate and key at the default TLS paths. `LDAP_TLS_ENABLED=auto` enables TLS when both satisfy the TLS source requirements above.
-  - Mount the CA certificate on the consumer on every start so it can verify the provider.
+  - Mount the CA certificate on every consumer on every start so it can verify the provider.
   - The provider may omit the CA only when `LDAP_TLS_VERIFY_CLIENT=never`, as shown above.
   - The provider certificate's Subject Alternative Name (SAN) must match the hostname in `LDAP_INIT_REPLICATION_PROVIDER_URI`.
   - If applications connect to the consumer over LDAPS, its certificate SAN must also match its client-facing hostname.
@@ -580,17 +583,45 @@ After setting the roles, provide these files:
 Use these initialization rules:
 
 - **Separate volumes:** Give each node its own initially empty config and data volumes.
-- **Consumer bootstrap:** The consumer skips local sample entries so its first synchronization can populate the database. Its periodic backup worker waits for that synchronization instead of backing up an empty or partial replica.
-- **Matching directory settings:** Both nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
+- **Consumer bootstrap:** Each consumer skips local sample entries so its first synchronization can populate the database.
+  Its periodic backup worker waits for that synchronization instead of backing up an empty or partial replica.
+- **Matching directory settings:** All nodes must use the same organization DN, compatible schemas, and the same effective password-policy DN.
 - **Reserved entries:** The provider creates `uid=replicator,${LDAP_INIT_ORG_DN}` and `cn=ReplicationPasswordPolicy,${LDAP_INIT_ORG_DN}`. Custom initialization LDIF must not reuse `uid: replicator` or `cn: ReplicationPasswordPolicy` on another entry because `uid` and `cn` are unique throughout the organization suffix.
 
-See the [complete Docker Compose example](example/docker-compose/syncrepl/) for local certificates, startup, and verification commands.
+See the [complete Docker Compose example](example/docker-compose/syncrepl/) for a provider and one consumer, including local certificates, startup, and verification commands.
+Additional consumers repeat the consumer configuration with their own config and data volumes.
+
+#### Kubernetes topology and failure behavior
+
+The image does not elect a writer. Select exactly one provider when its config volume is initialized:
+
+- Run one provider pod with `LDAP_INIT_REPLICATION_ROLE=provider`. Give it stable config and data volumes, and expose a write Service that selects only this pod.
+- Run one or more consumer pods with `LDAP_INIT_REPLICATION_ROLE=consumer` and `LDAP_INIT_REPLICATION_PROVIDER_URI=ldaps://<provider-service>`. Expose a separate read Service that selects these pods.
+- Use stateful workloads and give every pod its own config and data volumes. Scaling consumers must create new, initially empty volumes rather than share database files.
+
+Replication is asynchronous. Applications that require read-after-write consistency should read from the provider endpoint.
+The consumer endpoint can distribute other reads across equivalent read replicas.
+
+If the provider pod fails:
+
+- Kubernetes can recreate the pod and reattach its existing volumes. Writes remain unavailable until that provider is running again.
+- Consumers continue serving their last replicated data, so reads can remain available but become stale while the provider is down.
+- After the provider returns with the same data, consumers reconnect and catch up.
+
+There is no automatic writer failover. Consumers remain read-only and do not elect or promote a replacement provider.
+Changing `LDAP_INIT_REPLICATION_ROLE` on an existing consumer does not promote it because the setting is used only when an empty config volume is initialized.
+
+If the provider volumes are permanently lost, restore the provider from backup.
+A manual promotion requires a tested recovery procedure: fence the old provider, change the selected consumer's persisted `cn=config`, move the write Service, and reconfigure the remaining consumers.
+The image does not automate these steps; bringing the old provider back as a second writer could cause split-brain changes.
+
+#### Bootstrap limits
 
 The environment-variable bootstrap has these limits:
 
 - It is applied only while a new config volume is initialized. Changing the bootstrap variables or secret later does not update the persisted `cn=config`.
 - It supports only strict LDAPS with simple-bind authentication.
-- For configurations beyond one provider and one read-only consumer, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
+- For replication topologies other than one provider with one or more read-only consumers, configure `cn=config` directly and leave `LDAP_INIT_REPLICATION_ROLE` unset.
 
 
 ### <a name="uidgid"></a>Changing UID/GID of OpenLDAP service user

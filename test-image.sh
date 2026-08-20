@@ -23,10 +23,13 @@ provider_container="$test_id-provider"
 provider_config_volume="$test_id-provider-config"
 provider_data_volume="$test_id-provider-data"
 consumer_container="$test_id-consumer"
+second_consumer_container="$test_id-consumer-2"
 root_password_container="$test_id-root-password"
 replication_password_path_container="$test_id-replication-password-path"
 consumer_config_volume="$test_id-consumer-config"
 consumer_data_volume="$test_id-consumer-data"
+second_consumer_config_volume="$test_id-consumer-2-config"
+second_consumer_data_volume="$test_id-consumer-2-data"
 test_dir=$(mktemp -d)
 tls_dir="$test_dir/tls"
 replication_secret_dir="$test_dir/secrets"
@@ -105,13 +108,16 @@ fi
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
 function cleanup() {
   docker rm --force --volumes \
-    "$container" "$provider_container" "$consumer_container" "$root_password_container" \
+    "$container" "$provider_container" "$consumer_container" "$second_consumer_container" \
+    "$root_password_container" \
     "$replication_password_path_container" \
     >/dev/null 2>&1 || true
   docker volume rm --force \
     "$config_volume" "$data_volume" \
     "$provider_config_volume" "$provider_data_volume" \
-    "$consumer_config_volume" "$consumer_data_volume" >/dev/null 2>&1 || true
+    "$consumer_config_volume" "$consumer_data_volume" \
+    "$second_consumer_config_volume" "$second_consumer_data_volume" \
+    >/dev/null 2>&1 || true
   docker network rm "$replication_network" >/dev/null 2>&1 || true
   # Only the exact directory returned by mktemp is removed; cleanup never derives
   # a recursive-delete target from image input or caller-controlled environment.
@@ -404,6 +410,7 @@ function start_replication_node() {
 function wait_for_replica_entry() {
   local entry_dn=$1
   local ldap_uri=${2:-ldaps://consumer}
+  local target_consumer=${3:-$consumer_container}
   local -a tls_options=()
 
   # Most checks exercise the normal LDAPS listener. The inbound-disable lifecycle
@@ -421,19 +428,19 @@ function wait_for_replica_entry() {
     # text is unsuitable because servers may normalize attribute type casing.
     if docker exec \
         "${tls_options[@]}" \
-        "$consumer_container" \
+        "$target_consumer" \
         ldapsearch -LLL -x -H "$ldap_uri" \
           -D "$root_dn" -w "$root_password" \
           -b "$entry_dn" -s base '(objectClass=*)' 1.1 >/dev/null 2>&1; then
       return 0
     fi
-    if [[ $(docker inspect --format '{{.State.Running}}' "$consumer_container") != true ]]; then
+    if [[ $(docker inspect --format '{{.State.Running}}' "$target_consumer") != true ]]; then
       break
     fi
     sleep 0.5
   done
 
-  docker logs --tail 80 "$consumer_container" >&2
+  docker logs --tail 80 "$target_consumer" >&2
   echo "Replication did not deliver $entry_dn." >&2
   return 1
 }

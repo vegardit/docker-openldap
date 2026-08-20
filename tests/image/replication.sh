@@ -26,7 +26,7 @@ test_phase "Checking TLS replication and consumer backup lifecycle"
 mkdir "$tls_dir" "$replication_secret_dir"
 printf '%s\n' \
   '[server]' \
-  'subjectAltName=DNS:provider,DNS:consumer' \
+  'subjectAltName=DNS:provider,DNS:consumer,DNS:consumer-2' \
   'basicConstraints=critical,CA:FALSE' \
   'keyUsage=critical,digitalSignature,keyEncipherment' \
   'extendedKeyUsage=serverAuth' >"$tls_dir/server.ext"
@@ -40,7 +40,7 @@ MSYS2_ARG_CONV_EXCL='/CN=' openssl req -x509 -newkey rsa:2048 -nodes -sha256 -da
 MSYS2_ARG_CONV_EXCL='/CN=' openssl req -newkey rsa:2048 -nodes -sha256 \
   -subj '/CN=provider-cn-only' \
   -keyout "$tls_dir/server.key" -out "$tls_dir/server.csr" >/dev/null 2>&1
-# A single short-lived test keypair keeps the fixture small; its SANs match both
+# A single short-lived test keypair keeps the fixture small; its SANs match all
 # fixed Docker DNS names so hostname verification remains strict on every hop.
 openssl x509 -req -sha256 -days 1 \
   -in "$tls_dir/server.csr" \
@@ -87,7 +87,8 @@ assert_initialization_rejected \
 docker network create "$replication_network" >/dev/null
 for volume in \
     "$provider_config_volume" "$provider_data_volume" \
-    "$consumer_config_volume" "$consumer_data_volume"; do
+    "$consumer_config_volume" "$consumer_data_volume" \
+    "$second_consumer_config_volume" "$second_consumer_data_volume"; do
   docker volume create "$volume" >/dev/null
 done
 
@@ -100,6 +101,16 @@ start_replication_node \
   consumer ldaps://provider "$docker_ca_file" "$consumer_backup_time" \
   "$consumer_conflicting_ppm_config"
 wait_until_ready "$consumer_container"
+
+# Each syncrepl rid is local to its consumer. A second node can therefore use the
+# same generated configuration and bind identity, but it must own independent
+# config and data volumes so the two slapd processes never share database files.
+start_replication_node \
+  "$second_consumer_container" consumer-2 \
+  "$second_consumer_config_volume" "$second_consumer_data_volume" \
+  consumer ldaps://provider "$docker_ca_file" '' \
+  "$consumer_conflicting_ppm_config"
+wait_until_ready "$second_consumer_container"
 
 # Syncrepl's default schema checking can accept replicated attributes without a
 # local definition. Query cn=config before the provider starts so replication
@@ -380,6 +391,13 @@ wait_for_replica_entry 'cn=replication-before-restart,DC=example,DC=com'
 wait_for_replica_entry "$replication_group_dn"
 wait_for_replica_entry "$replication_member_dn"
 wait_for_replica_entry 'cn=DefaultPasswordPolicy,ou=Policies,DC=example,DC=com'
+# One provider entry reaching two independently initialized consumers is the
+# supported one-to-many contract. Do not infer synchronized cn=config: each node
+# loaded its local schema before the shared directory entry could be accepted.
+wait_for_replica_entry \
+  'cn=replication-before-restart,DC=example,DC=com' \
+  ldaps://consumer-2 \
+  "$second_consumer_container"
 
 # Both nodes receive conflicting local input, but the consumer's suffix belongs
 # to syncrepl. Its policy must therefore retain the provider-authored PPM text.
@@ -456,19 +474,27 @@ docker exec \
 
 # A one-way replica must reject local updates or its database can diverge from
 # the provider even though its replicated entries continue to look healthy.
-if docker exec -i \
-    --env LDAPTLS_CACERT=/etc/ldap/certs/ca.crt \
-    --env LDAPTLS_REQCERT=demand \
-    "$consumer_container" \
-    ldapadd -x -H ldaps://consumer -D "$root_dn" -w "$root_password" >/dev/null 2>&1 <<'LDIF'; then
+function assert_replication_consumer_read_only() {
+  local target_consumer=$1
+  local ldap_uri=$2
+
+  if docker exec -i \
+      --env LDAPTLS_CACERT=/etc/ldap/certs/ca.crt \
+      --env LDAPTLS_REQCERT=demand \
+      "$target_consumer" \
+      ldapadd -x -H "$ldap_uri" -D "$root_dn" -w "$root_password" >/dev/null 2>&1 <<'LDIF'; then
 dn: cn=must-not-be-written-locally,DC=example,DC=com
 objectClass: top
 objectClass: organizationalRole
 cn: must-not-be-written-locally
 LDIF
-  echo "The replication consumer accepted a local write." >&2
-  exit 1
-fi
+    echo "Replication consumer [$target_consumer] accepted a local write." >&2
+    return 1
+  fi
+}
+
+assert_replication_consumer_read_only "$consumer_container" ldaps://consumer
+assert_replication_consumer_read_only "$second_consumer_container" ldaps://consumer-2
 
 # ==============================================================================
 # Persisted consumer restart and replication recovery
