@@ -5,7 +5,7 @@ version: 1
 dn: olcDatabase={-1}frontend,cn=config
 changetype: modify
 replace: olcPasswordHash
-olcPasswordHash: {SSHA}
+olcPasswordHash: {${LDAP_INIT_PASSWORD_HASH}}
 -
 # maximum number of seconds (in real time) slapd will spend answering a search request
 replace: olcTimeLimit

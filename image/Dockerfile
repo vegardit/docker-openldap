@@ -7,6 +7,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
+# Builds the runtime OpenLDAP image and declares its supported bootstrap defaults.
+
 # https://hub.docker.com/_/debian/tags?name=trixie-slim
 ARG BASE_IMAGE=debian:trixie-slim
 
@@ -55,9 +57,8 @@ RUN --mount=type=bind,source=.shared,target=/mnt/shared <<EOF
     libsasl2-modules-gssapi-mit \
     util-linux
 
-  # Existing cn=config volumes may still use the old path. Keep it working until
-  # the entrypoint replaces it with ppm.so. Fail the build here if Debian changes
-  # the package layout; ln alone would silently create a dangling compatibility link.
+  # Existing cn=config volumes may still reference pqchecker.so until the entrypoint
+  # migrates them to ppm.so. Verify the replacement because ln permits dangling links.
   test -e /usr/lib/ldap/ppm.so
   ln -s ppm.so /usr/lib/ldap/pqchecker.so
 
@@ -116,6 +117,7 @@ ENV \
   LDAP_INIT_ORG_ATTR_O='' \
   LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_PASSWORD_RESET_GROUP_DN='cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}' \
+  LDAP_INIT_PASSWORD_HASH='ARGON2' \
   LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}' \
   LDAP_INIT_ROOT_USER_PW_FILE='' \
   LDAP_INIT_ROOT_USER_PW='' \

@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
+# Initializes or migrates persisted OpenLDAP state before starting the production daemon.
+
 # shellcheck disable=SC1091  # Not following: /opt/bash-init.sh was not specified as input
 source /opt/bash-init.sh
 
@@ -222,6 +224,28 @@ function ldif() {
   )
 }
 
+function reconcile_argon2_module() {
+  local module_config
+
+  # Module registration is process-global, so inspect every list before changing
+  # the image-owned cn=module{0}. This avoids duplicating a valid operator-owned
+  # load while keeping all writes within the image's configuration boundary.
+  if ! module_config=$(ldapsearch -LLL -o ldif-wrap=no -Q -Y EXTERNAL -H ldapi:/// \
+      -b 'cn=config' -s one '(objectClass=olcModuleList)' olcModuleLoad); then
+    log ERROR "Cannot inspect configured module lists for Argon2 support."
+    return 1
+  fi
+
+  # The ordered prefix belongs to cn=config, while tokens after the filename are
+  # module arguments. Accept Debian's bare, .so, and .la aliases at any path.
+  if grep -Eqi '^olcModuleLoad: (\{[0-9]+\})?([^[:space:]]*/)?argon2(\.(so|la))?([[:space:]]|$)' \
+      <<<"$module_config"; then
+    return 0
+  fi
+
+  ldif modify -Y EXTERNAL /opt/ldifs/init_module_argon2.ldif
+}
+
 # This helper owns only the local daemon used before the final service exec.
 # Its start/stop lifecycle must not acquire the production network listeners.
 function prestart_slapd() {
@@ -375,6 +399,15 @@ if [ ! -e "$initialized_file" ]; then
     exit 1
   fi
 
+  # This setting is deliberately bootstrap-only. Existing volumes keep their
+  # persisted olcPasswordHash, so later environment changes must not alter policy.
+  # The value reaches both LDIF and command arguments. Keep the public setting a
+  # closed list of image-tested tokens rather than accepting OpenLDAP expressions.
+  case "${LDAP_INIT_PASSWORD_HASH-}" in
+    ARGON2|SSHA) ;;
+    *) log ERROR "LDAP_INIT_PASSWORD_HASH must be ARGON2|SSHA"; exit 1 ;;
+  esac
+
   if [[ -z ${LDAP_INIT_ROOT_USER_DN:-} ]]; then
     log ERROR "LDAP_INIT_ROOT_USER_DN variable is not set!"
     exit 1
@@ -403,8 +436,13 @@ if [ ! -e "$initialized_file" ]; then
   # Both slappasswd -T and the LDAP clients' -y option accept a path. Bash process
   # substitution supplies that path through an anonymous pipe, keeping the password
   # out of argv and exported environments without creating a credential file.
+  # slappasswd is separate from slapd and does not see its loaded modules. Load
+  # Argon2 explicitly; doing so for the SSHA opt-out keeps one validated command path.
   # shellcheck disable=SC2034  # Referenced in /opt/ldifs/init_mdb.ldif.
-  if ! LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd -T <(printf '%s' "$root_user_password")); then
+  if ! LDAP_INIT_ROOT_USER_PW_HASHED=$(slappasswd \
+      -o module-load=argon2 \
+      -h "{$LDAP_INIT_PASSWORD_HASH}" \
+      -T <(printf '%s' "$root_user_password")); then
     log ERROR "Cannot hash the root user password"
     exit 1
   fi
@@ -538,9 +576,11 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
           exit 1
         fi
         # Hash the normalized value through stdin so the plaintext password does
-        # not appear in the slappasswd process arguments.
+        # not appear in the slappasswd process arguments. Match the root hash
+        # options so every image-generated credential follows the selected policy.
         # shellcheck disable=SC2034  # Referenced in the provider account LDIF.
-        LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED=$(printf '%s' "$LDAP_INIT_REPLICATION_BIND_PASSWORD" | slappasswd -T /dev/stdin)
+        LDAP_INIT_REPLICATION_BIND_PASSWORD_HASHED=$(printf '%s' "$LDAP_INIT_REPLICATION_BIND_PASSWORD" | \
+          slappasswd -o module-load=argon2 -h "{$LDAP_INIT_PASSWORD_HASH}" -T /dev/stdin)
         # The provider account template needs only the hash. Drop the plaintext
         # before starting slapd or any later bootstrap helper.
         unset LDAP_INIT_REPLICATION_BIND_PASSWORD
@@ -645,6 +685,12 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     )
   fi
 
+  # Load Argon2 before olcPasswordHash selects it, and keep it loaded for SSHA
+  # defaults so imported Argon2 hashes can still be verified.
+  # A trusted custom-schema LDIF may already have registered this process-global
+  # module, so reuse the idempotent persisted-volume reconciliation path.
+  reconcile_argon2_module || exit 1
+
   ldif modify -Y EXTERNAL /opt/ldifs/init_frontend.ldif
   ldif add    -Y EXTERNAL /opt/ldifs/init_module_memberof.ldif
   ldif modify -Y EXTERNAL /opt/ldifs/init_mdb.ldif
@@ -670,6 +716,8 @@ dc: $LDAP_INIT_ORG_ATTR_DC"
     # copy in the entrypoint after the final interpolation that needs it.
     unset LDAP_INIT_REPLICATION_BIND_PASSWORD
   else
+    # Keep each LDIF in a separate client session: files may have independent
+    # version headers, and ldif() keeps failure logs tied to the source file.
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_tree.ldif
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_ppolicy.ldif
     ldif add -x -D "$LDAP_INIT_ROOT_USER_DN" -y <(printf '%s' "$root_user_password") /opt/ldifs/init_org_entries.ldif
@@ -768,9 +816,10 @@ fi
 # state can prevent the local-only maintenance daemon from becoming reachable.
 tls_reconcile_stopped_config || exit 1
 
-# PPM and TLS enablement both require the local-only pre-start server. Keep them in
-# one daemon lifetime so migration never opens public LDAP.
+# Argon2 and PPM reconciliation plus TLS enablement require the local-only pre-start
+# server. Keep them in one daemon lifetime so migration never opens public LDAP.
 prestart_slapd start
+reconcile_argon2_module || exit 1
 ppm_reconcile || exit 1
 
 # Disabled TLS was handled before prestart because stale certificate paths can

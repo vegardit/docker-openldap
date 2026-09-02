@@ -77,6 +77,8 @@ function test_legacy_ppolicy_schema_migration_from_openldap_24() {
   local migration_data_volume="$test_id-openldap-24-data"
   local legacy_root_dn='uid=admin,o=example.com'
   local legacy_root_password='test-only-legacy-password'
+  local migrated_root_password='MigratedArgon1!'
+  local migrated_root_hash
   local migration_logs
   local policy_config
   local schema_config
@@ -116,6 +118,9 @@ function test_legacy_ppolicy_schema_migration_from_openldap_24() {
   fi
 
   test_step "Adding data that must survive the upgrade"
+  migrated_root_hash=$(printf '%s' "$migrated_root_password" | \
+    docker run --rm -i --entrypoint slappasswd "$image_name" \
+      -o module-load=argon2 -h '{ARGON2}' -T /dev/stdin)
   if ! docker exec -i "$legacy_container" \
       ldapadd -x -H ldap://127.0.0.1 \
         -D "$legacy_root_dn" -w "$legacy_root_password" <<'LDIF'
@@ -126,7 +131,24 @@ description: persisted-across-openldap-upgrade
 LDIF
   then
     docker logs "$legacy_container" >&2
-    echo "Cannot add the legacy ppolicy migration sentinel." >&2
+    echo "Cannot add the legacy migration regression entry." >&2
+    exit 1
+  fi
+
+  # Change the root password only after the legacy data setup is complete: the
+  # 2.4 daemon can persist this unknown scheme but cannot authenticate it until
+  # the upgraded image loads the Argon2 verifier from its migration path. Shell
+  # expansion is single-pass, so the hash's dollar-delimited PHC fields stay literal.
+  if ! docker exec -i "$legacy_container" \
+      ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<LDIF
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcRootPW
+olcRootPW: $migrated_root_hash
+LDIF
+  then
+    docker logs "$legacy_container" >&2
+    echo "Cannot persist the Argon2 root password in the legacy configuration." >&2
     exit 1
   fi
 
@@ -146,6 +168,14 @@ LDIF
       [[ $migration_logs != *'Finalized the legacy ppolicy schema migration'* ]]; then
     printf '%s\n' "$migration_logs" >&2
     echo "The legacy ppolicy schema migration did not report completion." >&2
+    exit 1
+  fi
+
+  if ! docker exec "$migrated_container" \
+      ldapwhoami -x -H ldap://127.0.0.1 \
+        -D "$legacy_root_dn" -w "$migrated_root_password" >/dev/null; then
+    docker logs "$migrated_container" >&2
+    echo "The migrated configuration cannot verify its persisted Argon2 root password." >&2
     exit 1
   fi
 
@@ -170,7 +200,7 @@ LDIF
 
   policy_config=$(docker exec "$migrated_container" \
     ldapsearch -LLL -o ldif-wrap=no -x -H ldap://127.0.0.1 \
-      -D "$legacy_root_dn" -w "$legacy_root_password" \
+      -D "$legacy_root_dn" -w "$migrated_root_password" \
       -b 'cn=DefaultPasswordPolicy,ou=Policies,o=example.com' -s base \
       '(objectClass=*)' pwdCheckModule pwdUseCheckModule pwdCheckModuleArg)
   # The entry state is the invariant; container log streams can interleave the
@@ -185,7 +215,7 @@ LDIF
 
   sentinel=$(docker exec "$migrated_container" \
     ldapsearch -LLL -x -H ldap://127.0.0.1 \
-      -D "$legacy_root_dn" -w "$legacy_root_password" \
+      -D "$legacy_root_dn" -w "$migrated_root_password" \
       -b 'cn=migration-regression,o=example.com' -s base description)
   if [[ $sentinel != *'description: persisted-across-openldap-upgrade'* ]]; then
     printf '%s\n' "$sentinel" >&2

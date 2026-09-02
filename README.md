@@ -51,6 +51,7 @@ LDAP_INIT_ORG_NAME='Example Corporation'
 LDAP_INIT_ORG_ATTR_O='' # optional, if not defined will be derived from LDAP_INIT_ORG_DN, e.g. DC=example,DC=com -> example.com
 LDAP_INIT_ADMIN_GROUP_DN='cn=ldap-admins,ou=Groups,${LDAP_INIT_ORG_DN}'
 LDAP_INIT_PASSWORD_RESET_GROUP_DN='cn=ldap-password-reset,ou=Groups,${LDAP_INIT_ORG_DN}' # users in this group can set password/sshPublicKey attribute of other users
+LDAP_INIT_PASSWORD_HASH='ARGON2' # ARGON2 (default) or SSHA (legacy compatibility)
 LDAP_INIT_ROOT_USER_DN='uid=admin,${LDAP_INIT_ORG_DN}'
 LDAP_INIT_ROOT_USER_PW_FILE='' # optional path; /run/secrets/ldap-admin-password is auto-detected
 LDAP_INIT_ROOT_USER_PW='changeit'
@@ -99,6 +100,22 @@ Environment variables can for example be set in one of the following ways:
      -v /path/on/docker/host/my_init.sh:/mnt/my_init.sh:ro \
      vegardit/openldap
    ```
+
+#### Password hashing
+
+Fresh configurations use `{ARGON2}` for new password hashes, including the root user and replication account.
+Argon2 deliberately uses more CPU and memory than fast SHA-1-based schemes so offline password guessing is more expensive.
+See the [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) for the security rationale.
+
+Set `LDAP_INIT_PASSWORD_HASH=SSHA` before the first launch only when legacy compatibility or the deployment's resource limits require it.
+`{SSHA}` is a salted but fast SHA-1 scheme and provides substantially weaker resistance to offline password guessing.
+The setting accepts only `ARGON2` or `SSHA`; arbitrary OpenLDAP schemes and module arguments are not supported.
+
+The selected scheme is persisted as `olcPasswordHash` during initialization and controls later LDAP password changes.
+An existing config volume keeps this value, and existing password values are not rewritten automatically.
+OpenLDAP can verify existing `{SSHA}` hashes when the persisted default is `{ARGON2}`.
+Resetting or changing a password migrates it to Argon2 only in that configuration.
+With a persisted `{SSHA}` default, the replacement hash remains `{SSHA}`.
 
 #### Root password file
 

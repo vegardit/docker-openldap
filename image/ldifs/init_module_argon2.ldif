@@ -1,0 +1,8 @@
+version: 1
+
+# Loads Argon2 password support for the selected default and imported Argon2 hashes.
+
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: argon2

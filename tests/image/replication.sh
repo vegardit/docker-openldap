@@ -320,6 +320,33 @@ docker exec "$provider_container" \
   ldapwhoami -x -H ldapi:/// \
     -D "$replication_dn" -w "$replication_password" >/dev/null
 
+# A successful bind proves that the credential works, not which cost profile was
+# persisted. Inspect the provider-owned entry so replication covers the same
+# initialization hash policy as root and user password changes.
+replication_account=$(docker exec "$provider_container" \
+  ldapsearch -LLL -o ldif-wrap=no -x -H ldapi:/// \
+    -D "$root_dn" -w "$root_password" \
+    -b "$replication_dn" -s base userPassword)
+replication_password_hash=$(sed -n 's/^userPassword: //p' <<<"$replication_account")
+if [[ -z $replication_password_hash ]]; then
+  # Keep this parser local so a replication failure names the provider lookup and
+  # does not depend on the password-hash scenario's helper or source ordering.
+  replication_password_hash_base64=$(sed -n 's/^userPassword:: //p' <<<"$replication_account")
+  if [[ -z $replication_password_hash_base64 ]]; then
+    echo "The replication account search did not return userPassword." >&2
+    exit 1
+  fi
+  if ! replication_password_hash=$(printf '%s' "$replication_password_hash_base64" | base64 -d); then
+    echo "The replication account password hash is not valid Base64." >&2
+    exit 1
+  fi
+fi
+# Dollar signs delimit Argon2 PHC fields and must remain literal shell input.
+if [[ $replication_password_hash != "{ARGON2}\$argon2id\$"* ]]; then
+  echo "The replication account does not use the default Argon2 password hash." >&2
+  exit 1
+fi
+
 docker exec -i "$provider_container" \
   ldapadd -x -H ldapi:/// -D "$root_dn" -w "$root_password" <<'LDIF'
 dn: cn=replication-group,DC=example,DC=com

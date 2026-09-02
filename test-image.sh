@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-ArtifactOfProjectHomePage: https://github.com/vegardit/docker-openldap
 
+# Runs the image integration suite with isolated Docker resources and shared lifecycle fixtures.
+
 set -euo pipefail
 
 # ==============================================================================
@@ -583,6 +585,15 @@ exec "$@"
 SH
 chmod +x "$offline_tool_uid_entrypoint"
 
+# Operators may preload Argon2 through custom-schema. Keep this fixture to verify
+# that built-in initialization reuses the process-global module load.
+cat >"$custom_schema_ldif_dir/00-argon2-module.ldif" <<'LDIF'
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: argon2
+LDIF
+
 # The second schema uses the attribute from the first. Their deliberately
 # non-padded names prove that the loader uses documented bytewise ordering.
 cat >"$custom_schema_ldif_dir/10-attribute.ldif" <<'LDIF'
@@ -653,6 +664,10 @@ changetype: modify
 replace: description
 description: loaded-in-filename-order
 LDIF
+
+# shellcheck source=tests/image/password-hash.sh
+source "$script_dir/tests/image/password-hash.sh"
+test_password_hash_configuration
 
 # shellcheck source=tests/image/ppm.sh
 source "$script_dir/tests/image/ppm.sh"
